@@ -41,9 +41,11 @@ def test_canonical_form_sorted_and_compact():
     assert blob == b'{"a":{"c":3,"d":2},"b":1}'
 
 
-def test_timestamp_normalized_to_whole_second_utc():
+def test_timestamp_preserved_verbatim_including_subseconds():
+    # SC-CANON-01: canonicalization normalizes STRUCTURE only; values —
+    # including sub-second timestamp precision — are preserved verbatim.
     blob = canonical_bytes({"t": "2026-11-05T10:20:30.987654+02:30"})
-    assert blob == b'{"t":"2026-11-05T07:50:30Z"}'
+    assert blob == b'{"t":"2026-11-05T10:20:30.987654+02:30"}'
 
 
 def test_manifest_validates_against_schema():

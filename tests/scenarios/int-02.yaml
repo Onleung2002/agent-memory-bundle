@@ -1,0 +1,92 @@
+{
+  "id": "INT-02",
+  "spec_version": "0.1",
+  "title": "truncate_last re-digests the truncated body and marks integrity.truncated",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-int-02"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "r1",
+            "kind": "fact",
+            "body": "0123456789",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "a2f4d3a5921c1b6313825739dcdc6a21afcfab55e4062419181df9a8e011a34b"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 13,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "r2",
+            "kind": "fact",
+            "body": "abcdefgh",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "a25c00aa0e627fd76143597c5a42ac1ea91e52bc41a91c2edb6ecc96216fb7c2"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 13,
+                "on_budget_exceed": "truncate_last",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "r1",
+      "r2"
+    ],
+    "bodies": {
+      "r2": "abc"
+    },
+    "digests_valid": true,
+    "truncated": [
+      "r2"
+    ]
+  }
+}

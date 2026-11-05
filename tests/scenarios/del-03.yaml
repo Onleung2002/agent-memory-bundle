@@ -1,0 +1,85 @@
+{
+  "id": "DEL-03",
+  "spec_version": "0.1",
+  "title": "records with lifecycle=deleted never load",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-del-03"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-live",
+            "kind": "fact",
+            "body": "live synthetic body",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "206400212254187042a18310b7dcdf6792c1a1fe03f4f361dfd1f79718e99521"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-dead",
+            "kind": "fact",
+            "body": "deleted synthetic body",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "deleted",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "f5018a6fdd0cfedc35565ebd6f1e62037b776f90047db104987c1080b98a34f9"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-live"
+    ],
+    "digests_valid": true
+  }
+}

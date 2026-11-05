@@ -1,0 +1,51 @@
+{
+  "id": "DEL-04",
+  "spec_version": "0.1",
+  "title": "import dedupes tombstones by target_id: latest deleted_at wins, derived_artifacts UNION",
+  "op": "import",
+  "input": {
+    "store": {
+      "records": [],
+      "tombstones": [
+        {
+          "target_id": "rec-t",
+          "deleted_at": "2026-06-01T00:00:00Z",
+          "reason": "second",
+          "derived_artifacts": [
+            "emb:rec-t"
+          ]
+        }
+      ]
+    },
+    "bundle": {
+      "bundle": {
+        "id": "sc-del-04"
+      },
+      "mbcp_version": "0.1",
+      "records": [],
+      "tombstones": [
+        {
+          "target_id": "rec-t",
+          "deleted_at": "2026-01-01T00:00:00Z",
+          "reason": "first",
+          "derived_artifacts": [
+            "chunk:rec-t:0"
+          ]
+        }
+      ]
+    }
+  },
+  "expect": {
+    "record_ids": [],
+    "tombstones": [
+      {
+        "target_id": "rec-t",
+        "reason": "second",
+        "derived_artifacts": [
+          "chunk:rec-t:0",
+          "emb:rec-t"
+        ]
+      }
+    ]
+  }
+}

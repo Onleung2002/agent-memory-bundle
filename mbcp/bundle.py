@@ -2,14 +2,19 @@
 
 import copy
 import hashlib
+import re
 from collections import defaultdict
 
 from . import _schema
-from .canonical import canonical_bytes, utc_now
+from .canonical import canonical_bytes, canonical_sha256, utc_now
 
 MBCP_VERSION = "0.1"
 
 PRIORITY_ORDER = {"critical": 0, "standard": 1, "opportunistic": 2}
+_MERGE_MODES = {"append_first_wins", "append_last_wins", "error_on_conflict"}
+_BUDGET_MODES = {"truncate_last", "skip", "error"}
+_LIFECYCLES = {"active", "archived", "deleted"}
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _RECORD_SCHEMA = None
 _MANIFEST_SCHEMA = None
@@ -24,6 +29,12 @@ class BudgetExceeded(ValueError):
 class MergeConflict(ValueError):
     """Raised when duplicate record ids collide and any copy declares
     merge = "error_on_conflict"."""
+
+
+class LoadValidationError(ValueError):
+    """Raised when load() input is structurally malformed (bad types,
+    missing required fields, bogus digest format). Unknown EXTRA fields
+    are not an error: they pass through and are retained (SPEC P3)."""
 
 
 def _record_schema():
@@ -130,6 +141,136 @@ def build_bundle(bundle_id, records=(), tombstones=(), *, mbcp_version=MBCP_VERS
     return validate_bundle(manifest)
 
 
+# ---------------------------------------------------------------------------
+# load-time structural validation (SPEC 1.5)
+#
+# Tolerant by design: unknown EXTRA fields anywhere in a record pass through
+# and are retained (unknown-field retention, SPEC P3). Malformed STRUCTURE
+# (missing required fields, wrong types, invalid enum values, bogus digest
+# format) raises LoadValidationError — never a bare KeyError/TypeError.
+# ---------------------------------------------------------------------------
+
+
+def _err(path, msg):
+    return LoadValidationError(f"{path}: {msg}")
+
+
+def _check(cond, path, msg):
+    if not cond:
+        raise _err(path, msg)
+
+
+def _check_str(obj, key, path, *, min_len=0, required=True):
+    if key not in obj:
+        _check(not required, path, f"missing required property {key!r}")
+        return None
+    value = obj[key]
+    _check(isinstance(value, str), f"{path}.{key}", "expected string")
+    _check(len(value) >= min_len, f"{path}.{key}", f"shorter than {min_len}")
+    return value
+
+
+def _check_dict(obj, key, path, *, required=True):
+    if key not in obj:
+        _check(not required, path, f"missing required property {key!r}")
+        return None
+    value = obj[key]
+    _check(isinstance(value, dict), f"{path}.{key}", "expected object")
+    return value
+
+
+def check_record_on_load(record, path="$.records[]"):
+    """Structurally validate a record for load; raise LoadValidationError."""
+    _check(isinstance(record, dict), path, "expected object")
+    _check_str(record, "id", path, min_len=1)
+    _check_str(record, "kind", path, min_len=1)
+    _check_str(record, "body", path)
+    scope = _check_dict(record, "scope", path)
+    _check_str(scope, "owner", f"{path}.scope", min_len=1)
+    time_ = _check_dict(record, "time", path)
+    _check_str(time_, "created", f"{path}.time", min_len=1)
+    _check(
+        record.get("lifecycle") in _LIFECYCLES,
+        f"{path}.lifecycle",
+        f"expected one of {sorted(_LIFECYCLES)}",
+    )
+    provenance = _check_dict(record, "provenance", path)
+    _check_str(provenance, "source", f"{path}.provenance", min_len=1)
+    consent = _check_dict(record, "consent", path)
+    _check(
+        isinstance(consent.get("exportable"), bool),
+        f"{path}.consent.exportable",
+        "expected boolean",
+    )
+    integrity = _check_dict(record, "integrity", path)
+    _check(
+        integrity.get("algo") == "sha256",
+        f"{path}.integrity.algo",
+        "expected 'sha256'",
+    )
+    digest = integrity.get("digest")
+    _check(
+        isinstance(digest, str) and _DIGEST_RE.match(digest) is not None,
+        f"{path}.integrity.digest",
+        "expected 64 lowercase hex chars",
+    )
+    mbcp = _check_dict(record, "mbcp", path)
+    policy = _check_dict(mbcp, "load_policy", f"{path}.mbcp")
+    _check(
+        policy.get("priority") in PRIORITY_ORDER,
+        f"{path}.mbcp.load_policy.priority",
+        f"expected one of {sorted(PRIORITY_ORDER)}",
+    )
+    max_chars = policy.get("max_chars")
+    _check(
+        isinstance(max_chars, int) and not isinstance(max_chars, bool)
+        and max_chars >= 0,
+        f"{path}.mbcp.load_policy.max_chars",
+        "expected non-negative integer",
+    )
+    _check(
+        policy.get("on_budget_exceed") in _BUDGET_MODES,
+        f"{path}.mbcp.load_policy.on_budget_exceed",
+        f"expected one of {sorted(_BUDGET_MODES)}",
+    )
+    _check(
+        policy.get("merge") in _MERGE_MODES,
+        f"{path}.mbcp.load_policy.merge",
+        f"expected one of {sorted(_MERGE_MODES)}",
+    )
+    return record
+
+
+def check_tombstone_on_load(tombstone, path="$.tombstones[]"):
+    _check(isinstance(tombstone, dict), path, "expected object")
+    _check_str(tombstone, "target_id", path, min_len=1)
+    _check_str(tombstone, "deleted_at", path, min_len=1)
+    _check_str(tombstone, "reason", path)
+    artifacts = tombstone.get("derived_artifacts")
+    _check(
+        isinstance(artifacts, list)
+        and all(isinstance(a, str) for a in artifacts),
+        f"{path}.derived_artifacts",
+        "expected array of strings",
+    )
+    return tombstone
+
+
+def check_manifest_on_load(manifest):
+    _check(isinstance(manifest, dict), "$", "expected manifest object")
+    bundle = _check_dict(manifest, "bundle", "$")
+    _check_str(bundle, "id", "$.bundle", min_len=1)
+    records = manifest.get("records", [])
+    _check(isinstance(records, list), "$.records", "expected array")
+    tombstones = manifest.get("tombstones", [])
+    _check(isinstance(tombstones, list), "$.tombstones", "expected array")
+    for i, record in enumerate(records):
+        check_record_on_load(record, f"$.records[{i}]")
+    for i, tombstone in enumerate(tombstones):
+        check_tombstone_on_load(tombstone, f"$.tombstones[{i}]")
+    return manifest
+
+
 def _policy(record):
     return record["mbcp"]["load_policy"]
 
@@ -141,21 +282,30 @@ def _size_of(record):
     return len(canonical_bytes(body))
 
 
+def _digest_ok(record):
+    """Verify integrity.digest against the body (SPEC 1.6)."""
+    digest = hashlib.sha256(canonical_bytes(record["body"])).hexdigest()
+    return digest == record["integrity"]["digest"]
+
+
 def _resolve_duplicates(entries):
     """Merge records sharing an id, deterministically.
 
-    ``entries`` is a list of (record, bundle_id, index) already in
-    deterministic (bundle_id, index) order. Returns a list of winners in
-    the same relative order as their first occurrence.
+    ``entries`` is a list of (record, sort_key) already in deterministic
+    order. Returns a list of (record, sort_key) winners.
+
+    Mixed merge modes (SPEC 1.1): ``error_on_conflict`` anywhere in the
+    group raises MergeConflict; else if ALL copies declare
+    ``append_last_wins`` the last copy wins; otherwise the first copy wins.
     """
     groups = {}
     order = []
-    for record, bundle_id, index in entries:
+    for record, key in entries:
         rid = record["id"]
         if rid not in groups:
             groups[rid] = []
             order.append(rid)
-        groups[rid].append(record)
+        groups[rid].append((record, key))
 
     winners = []
     for rid in order:
@@ -163,7 +313,7 @@ def _resolve_duplicates(entries):
         if len(group) == 1:
             winners.append(group[0])
             continue
-        modes = {_policy(r)["merge"] for r in group}
+        modes = {_policy(r)["merge"] for r, _ in group}
         if "error_on_conflict" in modes:
             raise MergeConflict(
                 f"record id {rid!r} appears in {len(group)} bundles "
@@ -172,7 +322,6 @@ def _resolve_duplicates(entries):
         if modes == {"append_last_wins"}:
             winners.append(group[-1])
         else:
-            # append_first_wins (or mixed first/last): first occurrence wins
             winners.append(group[0])
     return winners
 
@@ -181,25 +330,61 @@ def load(bundles):
     """Deterministic cross-bundle load.
 
     Same set of bundles + same consumer version -> byte-identical result:
-    1. records gathered in (bundle id, in-bundle index) order
-    2. duplicate ids merged per load_policy.merge
-    3. ordered by priority (critical > standard > opportunistic), then
-       (bundle id, in-bundle index) as stable tie-break
-    4. per-priority-class max_chars budget enforced per
-       load_policy.on_budget_exceed (truncate_last | skip | error)
+
+    0. every manifest/record/tombstone is structurally validated
+       (LoadValidationError on malformed input; unknown extra fields pass
+       through and are retained)
+    1. integrity digests are verified; records whose digest does not match
+       their body are dropped (SPEC 1.6)
+    2. records with lifecycle="deleted" are filtered out
+    3. ALL tombstones from ALL bundles are gathered and applied before any
+       record is returned — a stale bundle can never resurrect a deleted
+       record (SPEC 1.2, load path)
+    4. manifests are ordered by (bundle id, canonical SHA-256 of the
+       manifest) — duplicate bundle ids get a content-digest tiebreak, so
+       the result never depends on input order (SPEC 1.4)
+    5. duplicate ids merged per load_policy.merge (mixed modes:
+       error_on_conflict dominates; all-last -> last; otherwise first)
+    6. ordered by priority (critical > standard > opportunistic), then the
+       deterministic manifest position as stable tie-break
+    7. max_chars is the CLASS budget: the effective budget of a priority
+       class is the MINIMUM max_chars declared by any loaded record of
+       that class, consumed cumulatively; over-budget records follow
+       load_policy.on_budget_exceed. truncate_last re-digests the
+       truncated body and marks integrity.truncated = true (SPEC 1.6).
     """
+    manifests = [check_manifest_on_load(m) for m in bundles]
+    # deterministic order, content-digest tiebreak for duplicate bundle ids
+    manifests.sort(key=lambda m: (m["bundle"]["id"], canonical_sha256(m)))
+
+    tombstoned = set()
+    for manifest in manifests:
+        for tombstone in manifest.get("tombstones", []):
+            tombstoned.add(tombstone["target_id"])
+
     entries = []
-    for manifest in sorted(bundles, key=lambda m: m["bundle"]["id"]):
-        bundle_id = manifest["bundle"]["id"]
+    for manifest_index, manifest in enumerate(manifests):
         for index, record in enumerate(manifest.get("records", [])):
-            entries.append((record, bundle_id, index))
+            if record["id"] in tombstoned:
+                continue
+            if record.get("lifecycle") == "deleted":
+                continue
+            if not _digest_ok(record):
+                continue
+            entries.append((record, (manifest_index, index)))
 
     winners = _resolve_duplicates(entries)
 
-    keyed = []
-    position = {id(r): i for i, (r, _, _) in enumerate(entries)}
-    for record in winners:
-        keyed.append((PRIORITY_ORDER[_policy(record)["priority"]], position[id(record)], record))
+    budgets = {}
+    for record, _ in winners:
+        priority = _policy(record)["priority"]
+        declared = _policy(record)["max_chars"]
+        budgets[priority] = min(declared, budgets.get(priority, declared))
+
+    keyed = [
+        (PRIORITY_ORDER[_policy(record)["priority"]], key, record)
+        for record, key in winners
+    ]
     keyed.sort(key=lambda t: (t[0], t[1]))
 
     budget_used = defaultdict(int)
@@ -207,7 +392,7 @@ def load(bundles):
     for _, _, record in keyed:
         policy = _policy(record)
         priority = policy["priority"]
-        remaining = policy["max_chars"] - budget_used[priority]
+        remaining = budgets[priority] - budget_used[priority]
         size = _size_of(record)
         if size <= remaining:
             loaded.append(record)
@@ -222,11 +407,16 @@ def load(bundles):
         if mode == "skip":
             continue
         # truncate_last: keep the record with its body cut to the remaining
-        # budget; if nothing remains, the record drops out entirely.
+        # budget, re-digested and marked; if nothing remains (or the body
+        # is not a string) the record drops out entirely.
         if remaining <= 0 or not isinstance(record["body"], str):
             continue
         truncated = copy.deepcopy(record)
         truncated["body"] = truncated["body"][:remaining]
+        truncated["integrity"]["digest"] = hashlib.sha256(
+            canonical_bytes(truncated["body"])
+        ).hexdigest()
+        truncated["integrity"]["truncated"] = True
         loaded.append(truncated)
         budget_used[priority] += remaining
     return loaded

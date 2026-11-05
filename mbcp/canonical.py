@@ -1,9 +1,13 @@
 """Deterministic canonical JSON for MBCP (stdlib only).
 
-Canonical form guarantees:
+Canonical form guarantees (SPEC 1.4):
 - object keys recursively sorted (byte order of UTF-8 code points)
 - no insignificant whitespace
-- RFC3339 timestamps normalized to whole-second UTC ("Z" suffix)
+- VALUES ARE PRESERVED VERBATIM: user strings (including RFC3339
+  timestamps with sub-second precision and UTC offsets) are never
+  rewritten. Canonicalization normalizes STRUCTURE only, so event
+  ordering information in timestamps survives a canonical round-trip
+  (json.loads(canonical_bytes(x)) == x for every conforming value).
 - NaN / Infinity rejected (not representable in canonical JSON)
 """
 
@@ -25,7 +29,9 @@ def utc_now():
 def normalize_timestamp(value):
     """Normalize an RFC3339 timestamp string to whole-second UTC 'Z' form.
 
-    Non-timestamp values are returned unchanged.
+    Non-timestamp values are returned unchanged. NOTE: this is a display /
+    comparison helper — canonicalization does NOT call it (values are
+    preserved verbatim in the canonical form).
     """
     if not isinstance(value, str) or not _TS_RE.match(value):
         return value
@@ -34,18 +40,14 @@ def normalize_timestamp(value):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _normalize(value):
-    if isinstance(value, dict):
-        return {k: _normalize(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_normalize(v) for v in value]
-    return normalize_timestamp(value)
-
-
 def canonical_bytes(obj):
-    """Serialize ``obj`` to deterministic canonical JSON bytes."""
+    """Serialize ``obj`` to deterministic canonical JSON bytes.
+
+    Structure is normalized (sorted keys, compact separators); values are
+    emitted verbatim.
+    """
     return json.dumps(
-        _normalize(obj),
+        obj,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

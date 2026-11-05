@@ -8,15 +8,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Test-count guard
-        run: |
-          before=$(git ls-tree -r origin/main --name-only 2>/dev/null | grep -cE '^tests/scenarios/.*\.ya?ml$' || echo 0)
-          after=$(git ls-tree -r HEAD --name-only | grep -cE '^tests/scenarios/.*\.ya?ml$' || echo 0)
-          echo "scenario count: before=$before after=$after"
-          if [ "$after" -lt "$before" ]; then
-            echo "::error::test scenarios decreased without spec revision — killing test-deletion regression"
-            exit 1
-          fi
+      - name: Test-count guard (all tests: unit + scenarios)
+        run: bash tools/test_count_guard.sh origin/main HEAD
+      - name: Test-count guard self-check (deliberate violation MUST fail the gate)
+        run: bash tools/test_count_guard.sh --self-test
       - name: Schema validity
         run: |
           set -e
@@ -24,5 +19,7 @@ jobs:
             python3 -c "import json,sys; json.load(open('$f'))"
           done
           echo "schemas OK"
-      - name: Suite runner
+      - name: Unit tests
         run: python3 tools/run_tests.py
+      - name: Conformance scenarios
+        run: python3 tools/run_scenarios.py

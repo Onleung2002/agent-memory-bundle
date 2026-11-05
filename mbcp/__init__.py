@@ -7,6 +7,7 @@ cross-bundle load_policy adjudication, and tombstone-first import.
 from .canonical import canonical_bytes, canonical_sha256, utc_now
 from .bundle import (
     BudgetExceeded,
+    LoadValidationError,
     MergeConflict,
     build_bundle,
     load,
@@ -24,6 +25,7 @@ __all__ = [
     "canonical_sha256",
     "utc_now",
     "BudgetExceeded",
+    "LoadValidationError",
     "MergeConflict",
     "build_bundle",
     "load",

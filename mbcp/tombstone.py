@@ -5,6 +5,8 @@ any addition, so a stale bundle carrying already-deleted rows can never
 resurrect them.
 """
 
+from datetime import datetime, timezone
+
 
 def apply_tombstones(records, tombstones):
     """Return records minus any whose id is targeted by a tombstone."""
@@ -12,18 +14,46 @@ def apply_tombstones(records, tombstones):
     return [r for r in records if r["id"] not in deleted]
 
 
-def _merge_tombstones(tombstones):
-    """Dedupe tombstones by target_id, keeping the latest deleted_at.
+def _parse_ts(value):
+    """Parse an RFC3339 timestamp for chronological comparison.
 
-    deleted_at is normalized whole-second UTC RFC3339, so lexicographic
-    max is chronological max.
+    Falls back to the raw string (lexicographic order) for unparseable
+    values so comparison stays total and deterministic.
     """
-    latest = {}
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (0, dt, "")
+    except (ValueError, AttributeError):
+        return (1, None, value)
+
+
+def _merge_tombstones(tombstones):
+    """Dedupe tombstones by target_id.
+
+    The copy with the latest ``deleted_at`` wins for ``deleted_at`` and
+    ``reason``, but ``derived_artifacts`` is the sorted UNION of every
+    copy's list (SPEC 1.2): L3 proof-of-reach evidence must never shrink
+    through a merge.
+    """
+    by_target = {}
     for tomb in tombstones:
         tid = tomb["target_id"]
-        if tid not in latest or tomb["deleted_at"] > latest[tid]["deleted_at"]:
-            latest[tid] = tomb
-    return [latest[tid] for tid in sorted(latest)]
+        entry = by_target.setdefault(tid, {"copies": [], "artifacts": set()})
+        entry["copies"].append(tomb)
+        entry["artifacts"].update(tomb.get("derived_artifacts", []))
+    merged = []
+    for tid in sorted(by_target):
+        entry = by_target[tid]
+        latest = max(entry["copies"], key=lambda t: _parse_ts(t["deleted_at"]))
+        merged.append({
+            "target_id": tid,
+            "deleted_at": latest["deleted_at"],
+            "reason": latest["reason"],
+            "derived_artifacts": sorted(entry["artifacts"]),
+        })
+    return merged
 
 
 def import_bundle(store, bundle):

@@ -1,0 +1,85 @@
+{
+  "id": "INT-01",
+  "spec_version": "0.1",
+  "title": "record whose integrity digest does not match its body is dropped on load",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-int-01"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-good",
+            "kind": "fact",
+            "body": "valid synthetic body",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "18b562439b0f9859c17b1452930f0e3dfdfdacd36aad28c7561d72245ab40998"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-bad",
+            "kind": "fact",
+            "body": "tampered synthetic body",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "155a8b73e25c653e59ef1aedc0701fbc8811d4bc342bbacd3153e1908bf455ab"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-good"
+    ],
+    "digests_valid": true
+  }
+}

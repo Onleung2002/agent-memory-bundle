@@ -69,3 +69,25 @@ def test_tombstone_dedup_keeps_latest_deleted_at():
     merged = import_bundle(store, bundle)
     assert len(merged["tombstones"]) == 1
     assert merged["tombstones"][0]["reason"] == "second"
+
+
+def test_sc_del_04_tombstone_merge_unions_derived_artifacts():
+    # L3 evidence must not shrink: merged tombstone carries the UNION of
+    # derived_artifacts from every copy, not just the latest copy's list.
+    older = make_tombstone(
+        "rec-t", "first",
+        deleted_at="2026-01-01T00:00:00Z",
+        derived_artifacts=["chunk:rec-t:0"],
+    )
+    newer = make_tombstone(
+        "rec-t", "second",
+        deleted_at="2026-06-01T00:00:00Z",
+        derived_artifacts=["emb:rec-t"],
+    )
+    store = {"records": [], "tombstones": [newer]}
+    bundle = build_bundle("bundle-t2", records=[], tombstones=[older])
+    merged = import_bundle(store, bundle)
+    assert len(merged["tombstones"]) == 1
+    winner = merged["tombstones"][0]
+    assert winner["reason"] == "second"  # latest deleted_at wins
+    assert sorted(winner["derived_artifacts"]) == ["chunk:rec-t:0", "emb:rec-t"]
