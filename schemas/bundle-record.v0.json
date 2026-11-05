@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mbcp.dev/schemas/bundle-record.v0.json",
+  "title": "MBCP bundle record (v0)",
+  "description": "Single memory record inside an MBCP bundle. Shape inherits UMP (kind/body/scope/time/lifecycle/provenance/consent/integrity); the mbcp extension adds cross-bundle load_policy.",
+  "type": "object",
+  "required": ["id", "kind", "body", "scope", "time", "lifecycle", "provenance", "consent", "integrity", "mbcp"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "minLength": 1},
+    "body": {"type": "string"},
+    "scope": {
+      "type": "object",
+      "required": ["owner"],
+      "additionalProperties": true,
+      "properties": {
+        "owner": {"type": "string", "minLength": 1}
+      }
+    },
+    "time": {
+      "type": "object",
+      "required": ["created"],
+      "additionalProperties": false,
+      "properties": {
+        "created": {"type": "string", "format": "date-time"},
+        "updated": {"type": "string", "format": "date-time"}
+      }
+    },
+    "lifecycle": {"enum": ["active", "archived", "deleted"]},
+    "provenance": {
+      "type": "object",
+      "required": ["source"],
+      "additionalProperties": true,
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "generated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "consent": {
+      "type": "object",
+      "required": ["exportable"],
+      "additionalProperties": false,
+      "properties": {
+        "retention": {"type": "string"},
+        "exportable": {"type": "boolean"},
+        "redact": {"type": "boolean"}
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["algo", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "algo": {"enum": ["sha256"]},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "mbcp": {
+      "type": "object",
+      "required": ["load_policy"],
+      "additionalProperties": false,
+      "properties": {
+        "load_policy": {
+          "type": "object",
+          "required": ["priority", "max_chars", "on_budget_exceed", "merge"],
+          "additionalProperties": false,
+          "properties": {
+            "priority": {"enum": ["critical", "standard", "opportunistic"]},
+            "max_chars": {"type": "integer", "minimum": 0},
+            "on_budget_exceed": {"enum": ["truncate_last", "skip", "error"]},
+            "merge": {"enum": ["append_first_wins", "append_last_wins", "error_on_conflict"]}
+          }
+        }
+      }
+    }
+  }
+}

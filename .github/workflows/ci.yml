@@ -24,6 +24,5 @@ jobs:
             python3 -c "import json,sys; json.load(open('$f'))"
           done
           echo "schemas OK"
-      - name: Suite runner placeholder
-        run: |
-          echo "suite runner: pending implementation (M1)"
+      - name: Suite runner
+        run: python3 tools/run_tests.py
