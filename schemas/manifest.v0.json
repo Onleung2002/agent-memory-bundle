@@ -1,0 +1,1 @@
+{"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "MBCP profile manifest (placeholder — M1)", "type": "object", "required": ["mbcp_version", "load_policy"]}

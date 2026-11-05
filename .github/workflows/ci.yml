@@ -1,0 +1,29 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test-count guard
+        run: |
+          before=$(git ls-tree -r origin/main --name-only 2>/dev/null | grep -cE '^tests/scenarios/.*\.ya?ml$' || echo 0)
+          after=$(git ls-tree -r HEAD --name-only | grep -cE '^tests/scenarios/.*\.ya?ml$' || echo 0)
+          echo "scenario count: before=$before after=$after"
+          if [ "$after" -lt "$before" ]; then
+            echo "::error::test scenarios decreased without spec revision — killing test-deletion regression"
+            exit 1
+          fi
+      - name: Schema validity
+        run: |
+          set -e
+          for f in schemas/*.json; do
+            python3 -c "import json,sys; json.load(open('$f'))"
+          done
+          echo "schemas OK"
+      - name: Suite runner placeholder
+        run: |
+          echo "suite runner: pending implementation (M1)"
