@@ -9,6 +9,7 @@ from m2_helpers import DELETED_AT, IMPORTED_AT
 import mbcp.deletion as deletion_module
 
 from mbcp import (
+    DeletionIncompleteError,
     L1DeletionService,
     UnknownTargetError,
     build_bundle,
@@ -18,7 +19,6 @@ from mbcp import (
     make_record,
     make_tombstone,
 )
-from mbcp.deletion import L1_LIMITATIONS
 
 from syn import FIXED_TS, OWNER, assert_raises
 
@@ -91,7 +91,12 @@ def test_receipt_structure_is_l1_and_honest():
         assert body["derived_artifacts"] == ["chunk:rec-002:0", "emb:rec-002"]
         assert body["derived_artifacts_verified"] is False
         assert body["propagation"] == {"propagated_to": []}
-        assert body["limitations"] == L1_LIMITATIONS
+        # Honesty, not constant-copying: the prose must disclose L1 scope,
+        # unverified derived-artifact erasure (L3) and non-certificate (L4).
+        limitations = " ".join(body["limitations"]).lower()
+        assert "l1 only" in limitations
+        assert "l3" in limitations and "not verified" in limitations
+        assert "l4" in limitations and "certificate" in limitations
         assert body["tombstone"]["target_id"] == "rec-002"
         assert body["tombstone_digest"] == canonical_sha256(body["tombstone"])
         assert body["issued_at"] == DELETED_AT
@@ -295,3 +300,256 @@ def test_derived_artifacts_from_journal_survive_merge():
         )
         merged = service.all_tombstones()
         assert merged[0]["derived_artifacts"] == ["chunk:rec-002:0"]
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the verifier's two MAJOR findings (M2 fix round).
+# ---------------------------------------------------------------------------
+
+
+def _cross_bundle_service(tmp):
+    """Two bundles under one service root sharing the same record id."""
+    service = L1DeletionService(Path(tmp) / "service", clock=lambda: DELETED_AT)
+    service.put_bundle(
+        build_bundle(
+            "bundle-a",
+            records=[
+                make_record("rec-001", "fact", "alpha one", OWNER, created=FIXED_TS),
+                make_record("rec-002", "fact", "alpha two", OWNER, created=FIXED_TS),
+            ],
+        )
+    )
+    service.put_bundle(
+        build_bundle(
+            "bundle-b",
+            records=[
+                make_record("rec-002", "fact", "beta two", OWNER, created=FIXED_TS),
+                make_record("rec-009", "fact", "beta nine", OWNER, created=FIXED_TS),
+            ],
+        )
+    )
+    return service
+
+
+def _ids(service, bundle_id):
+    return [r["id"] for r in service.get_bundle(bundle_id)["records"]]
+
+
+def test_delete_retry_after_crash_without_recover_is_truthful():
+    # MAJOR-1 (i): after a crash between the journal append and the manifest
+    # rewrite, retrying delete() WITHOUT recover() must finish the deletion
+    # and return a receipt bound to the digest that was actually removed —
+    # never a receipt for a record that is still present.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        original = {r["id"]: r for r in _manifest()["records"]}
+        original_atomic_write = deletion_module._atomic_write
+
+        def exploding_atomic_write(path, data):
+            if "bundles" in str(path):
+                raise OSError("simulated crash before manifest rewrite")
+            return original_atomic_write(path, data)
+
+        deletion_module._atomic_write = exploding_atomic_write
+        try:
+            assert_raises(
+                OSError,
+                service.delete,
+                "bundle-alpha",
+                "rec-002",
+                "synthetic crash erasure",
+            )
+        finally:
+            deletion_module._atomic_write = original_atomic_write
+        assert service.receipt_paths() == []
+        assert "rec-002" in _ids(service, "bundle-alpha")
+
+        receipt = service.delete("bundle-alpha", "rec-002", "synthetic crash erasure")
+
+        assert "rec-002" not in _ids(service, "bundle-alpha")
+        assert receipt["receipt"]["removed_records"] == [
+            {"id": "rec-002", "digest": original["rec-002"]["integrity"]["digest"]}
+        ]
+        result = service.verify_receipt(receipt)
+        assert result["ok"] is True, result
+        # the retry reused the journal tombstone instead of doubling it
+        assert len(service.journal_tombstones()) == 1
+
+
+def test_cross_bundle_same_id_delete_removes_every_copy():
+    # MAJOR-1 (ii): a journal tombstone from bundle-a must not short-circuit
+    # a delete that leaves bundle-b's copy in place. Every same-id copy under
+    # the service root is removed, and the receipt names all of them.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _cross_bundle_service(tmp)
+        digests = {
+            bundle_id: {
+                r["id"]: r["integrity"]["digest"]
+                for r in service.get_bundle(bundle_id)["records"]
+            }
+            for bundle_id in ("bundle-a", "bundle-b")
+        }
+
+        receipt = service.delete("bundle-a", "rec-002", "synthetic erasure")
+
+        assert "rec-002" not in _ids(service, "bundle-a")
+        assert "rec-002" not in _ids(service, "bundle-b")
+        removed = sorted(r["digest"] for r in receipt["receipt"]["removed_records"])
+        assert removed == sorted(
+            [digests["bundle-a"]["rec-002"], digests["bundle-b"]["rec-002"]]
+        )
+        assert service.verify_receipt(receipt)["ok"] is True
+
+        # the second (already-satisfied) request stays truthful and idempotent
+        again = service.delete("bundle-b", "rec-002", "synthetic erasure")
+        assert again["receipt"]["removed_records"] == receipt["receipt"][
+            "removed_records"
+        ]
+        assert service.verify_receipt(again)["ok"] is True
+
+
+def test_delete_refuses_to_receipt_a_surviving_copy():
+    # MAJOR-1: when a "successful" manifest write changes nothing, delete()
+    # must notice the survivor, refuse to issue a receipt, and let a retry
+    # finish the job honestly.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _cross_bundle_service(tmp)
+        original_atomic_write = deletion_module._atomic_write
+
+        def noop_atomic_write(path, data):
+            if str(path).endswith("bundle-b.json"):
+                return None  # pretends to succeed, writes nothing
+            return original_atomic_write(path, data)
+
+        deletion_module._atomic_write = noop_atomic_write
+        try:
+            assert_raises(
+                DeletionIncompleteError,
+                service.delete,
+                "bundle-a",
+                "rec-002",
+                "synthetic erasure",
+            )
+        finally:
+            deletion_module._atomic_write = original_atomic_write
+
+        assert service.receipt_paths() == []
+        assert "rec-002" in _ids(service, "bundle-b")
+
+        receipt = service.delete("bundle-a", "rec-002", "synthetic erasure")
+        assert "rec-002" not in _ids(service, "bundle-b")
+        assert service.verify_receipt(receipt)["ok"] is True
+
+
+def test_forged_receipt_with_recomputed_self_digest_is_rejected():
+    # MAJOR-2: fabricated evidence plus a recomputed self-digest must fail —
+    # tombstone_digest/reason/artifacts are bound to the journal, and
+    # removed_records to the durable removal evidence.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        real = service.delete("bundle-alpha", "rec-002", "real synthetic erasure")
+
+        forged = json.loads(json.dumps(real))
+        body = forged["receipt"]
+        body["removed_records"] = [{"id": "rec-002", "digest": "0" * 64}]
+        body["reason"] = "fake reason"
+        body["tombstone"]["reason"] = "fake reason"
+        body["tombstone_digest"] = canonical_sha256(body["tombstone"])
+        body["derived_artifacts"] = ["emb:fabricated"]
+        body["issued_at"] = "2030-01-01T00:00:00Z"
+        forged["integrity"]["digest"] = canonical_sha256(body)
+
+        result = service.verify_receipt(forged)
+
+        assert result["ok"] is False
+        assert any("journal tombstone" in p for p in result["problems"])
+        assert any("deletion evidence" in p for p in result["problems"])
+
+
+def test_forged_removed_digest_alone_is_rejected():
+    # MAJOR-2, minimal forgery: only removed_records is rewritten, every
+    # other field (including a recomputed self-digest) stays consistent.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        real = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+
+        forged = json.loads(json.dumps(real))
+        body = forged["receipt"]
+        body["removed_records"] = [{"id": "rec-002", "digest": "1" * 64}]
+        forged["integrity"]["digest"] = canonical_sha256(body)
+
+        result = service.verify_receipt(forged)
+
+        assert result["ok"] is False
+        assert any("deletion evidence" in p for p in result["problems"])
+
+
+def test_receipt_without_journal_tombstone_is_rejected():
+    # MAJOR-2: a receipt can only prove what the journal actually recorded.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        real = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        service.journal_path.write_text("", encoding="utf-8")  # journal lost
+
+        result = service.verify_receipt(real)
+
+        assert result["ok"] is False
+        assert any("no tombstone for target in journal" in p for p in result["problems"])
+
+
+def test_delete_retry_after_receipt_crash_reissues_receipt():
+    # Crash between the manifest rewrite and the receipt: the removal
+    # evidence must still allow a truthful receipt on retry (no empty
+    # removed_records, no invented digests).
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        original = {r["id"]: r for r in _manifest()["records"]}
+        original_atomic_write = deletion_module._atomic_write
+
+        def exploding_atomic_write(path, data):
+            if "receipts" in str(path):
+                raise OSError("simulated crash before receipt write")
+            return original_atomic_write(path, data)
+
+        deletion_module._atomic_write = exploding_atomic_write
+        try:
+            assert_raises(
+                OSError,
+                service.delete,
+                "bundle-alpha",
+                "rec-002",
+                "synthetic crash erasure",
+            )
+        finally:
+            deletion_module._atomic_write = original_atomic_write
+
+        assert service.receipt_paths() == []
+        assert "rec-002" not in _ids(service, "bundle-alpha")
+
+        receipt = service.delete("bundle-alpha", "rec-002", "synthetic crash erasure")
+
+        assert receipt["receipt"]["removed_records"] == [
+            {"id": "rec-002", "digest": original["rec-002"]["integrity"]["digest"]}
+        ]
+        assert service.verify_receipt(receipt)["ok"] is True
+
+
+def test_delete_heals_resurrected_record_without_duplicate_receipt():
+    # A stale manifest restored after deletion is removed again on the next
+    # delete, reusing the journal tombstone and the recorded evidence.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        first = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        service.put_bundle(_manifest())  # stale copy comes back
+        assert "rec-002" in _ids(service, "bundle-alpha")
+
+        second = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+
+        assert "rec-002" not in _ids(service, "bundle-alpha")
+        assert second["receipt"]["id"] == first["receipt"]["id"]
+        assert second["receipt"]["removed_records"] == first["receipt"][
+            "removed_records"
+        ]
+        assert len(service.receipt_paths()) == 1
+        assert len(service.journal_tombstones()) == 1
+        assert service.verify_receipt(second)["ok"] is True

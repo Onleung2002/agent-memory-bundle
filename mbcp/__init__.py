@@ -21,6 +21,7 @@ from .bundle import (
 from .tombstone import apply_tombstones, import_bundle
 from .deletion import (
     DeletionError,
+    DeletionIncompleteError,
     L1DeletionService,
     ReceiptValidationError,
     UnknownTargetError,
@@ -45,6 +46,7 @@ __all__ = [
     "apply_tombstones",
     "import_bundle",
     "DeletionError",
+    "DeletionIncompleteError",
     "L1DeletionService",
     "ReceiptValidationError",
     "UnknownTargetError",
