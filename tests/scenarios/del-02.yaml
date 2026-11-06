@@ -1,0 +1,100 @@
+{
+  "id": "DEL-02",
+  "spec_version": "0.1",
+  "title": "tombstone in bundle B blocks stale record carried by bundle A",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-del-02-a"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-x",
+            "kind": "fact",
+            "body": "stale synthetic copy",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "bebdd32aab57d4984fe836934b5a18a67ee0dba61e4c9741008498e25580ce05"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-y",
+            "kind": "fact",
+            "body": "survivor synthetic body",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "962dc61fbc48b69d666eb010707002fadff69c9407c2f927b73a3e1e197c290a"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "sc-del-02-b"
+        },
+        "mbcp_version": "0.1",
+        "records": [],
+        "tombstones": [
+          {
+            "target_id": "rec-x",
+            "deleted_at": "2026-11-05T08:00:00Z",
+            "reason": "synthetic erasure",
+            "derived_artifacts": []
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-y"
+    ],
+    "digests_valid": true
+  }
+}

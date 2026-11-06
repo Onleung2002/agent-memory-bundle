@@ -1,0 +1,60 @@
+{
+  "id": "DEL-01",
+  "spec_version": "0.1",
+  "title": "load() applies a tombstone carried in the same bundle",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-del-01"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "ghost",
+            "kind": "fact",
+            "body": "synthetic body that must not load",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "4fbeb157f6f53acd4001fad40567501791f8984c5fb1d25f80bcdd5269c9b858"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": [
+          {
+            "target_id": "ghost",
+            "deleted_at": "2026-11-05T08:00:00Z",
+            "reason": "synthetic erasure",
+            "derived_artifacts": []
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [],
+    "digests_valid": true
+  }
+}

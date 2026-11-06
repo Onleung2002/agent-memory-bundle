@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mbcp.dev/schemas/tombstone.v0.json",
+  "title": "MBCP tombstone (v0)",
+  "description": "Monotonic deletion record. Importers MUST apply tombstones before any addition (tombstone-first) so stale bundles cannot resurrect deleted records.",
+  "type": "object",
+  "required": ["target_id", "deleted_at", "reason", "derived_artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "target_id": {"type": "string", "minLength": 1},
+    "deleted_at": {"type": "string", "format": "date-time"},
+    "reason": {"type": "string"},
+    "derived_artifacts": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Derived artifacts (facts/edges/chunks/embedding-cache keys) that must also be erased (L3 proof-of-reach)."
+    }
+  }
+}

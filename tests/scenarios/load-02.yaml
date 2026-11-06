@@ -1,0 +1,104 @@
+{
+  "id": "LOAD-02",
+  "spec_version": "0.1",
+  "title": "duplicate bundle ids: tiebreak by canonical content digest, independent of input order",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-load-02"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-dup",
+            "kind": "fact",
+            "body": "from manifest one",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "d7fd7e6f54b722fc64e88a9d4924f96bd3ab37af7c97f14807c2e8096a766fc0"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_last_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "sc-load-02"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-dup",
+            "kind": "fact",
+            "body": "from manifest two",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "827066544b2fe4cebfda32cd59752118ab2a3e281b7cba4f058a79252ec75dc5"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_last_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": [
+          {
+            "target_id": "unrelated",
+            "deleted_at": "2026-11-05T08:00:00Z",
+            "reason": "synthetic",
+            "derived_artifacts": []
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-dup"
+    ],
+    "bodies": {
+      "rec-dup": "from manifest one"
+    },
+    "digests_valid": true
+  }
+}

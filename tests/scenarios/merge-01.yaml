@@ -1,0 +1,97 @@
+{
+  "id": "MERGE-01",
+  "spec_version": "0.1",
+  "title": "mixed merge modes: error_on_conflict dominates; all-last wins last; otherwise first wins",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-merge-01-a"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "dup",
+            "kind": "fact",
+            "body": "from a",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "21954de2f3a4bb86f14ad9596e2d25f8813293916aa063d85fa4d83195c440c3"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "sc-merge-01-b"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "dup",
+            "kind": "fact",
+            "body": "from b",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "21cf8ab1b93ce898d730d21b3e66868194c8b98d7bc1f8099e03662471bbeece"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_last_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "dup"
+    ],
+    "bodies": {
+      "dup": "from a"
+    },
+    "digests_valid": true
+  }
+}
