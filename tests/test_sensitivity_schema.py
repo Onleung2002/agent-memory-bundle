@@ -35,7 +35,13 @@ def test_vocabulary_is_exactly_the_isaac_ruling_set():
 
 def test_each_vocabulary_value_passes_build_validation():
     for value in SENSITIVITY_VOCABULARY:
-        validate_record(_record_with_sensitivity(value))
+        record = _record_with_sensitivity(value)
+        if value == "secret":
+            # A secret record is valid on the build path only when it is
+            # not exportable (M2 #6 invariant, now enforced by
+            # mbcp.validate_record itself).
+            record["consent"]["exportable"] = False
+        validate_record(record)
 
 
 def test_non_enum_sensitivity_rejected_on_build_path():

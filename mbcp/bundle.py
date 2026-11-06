@@ -58,9 +58,35 @@ def _tombstone_schema():
     return _TOMBSTONE_SCHEMA
 
 
+def check_sensitivity_invariant(record):
+    """Machine-checkable invariant (BACKLOG M2 #6, Isaac ruling 2026-11-06).
+
+    ``provenance.sensitivity == "secret"`` combined with
+    ``consent.exportable is True`` is REJECTED on the build path: a secret
+    record must never be marked exportable. Deterministic — pure function of
+    the record, raises ValueError naming the violated rule. Records with no
+    sensitivity field (or any non-secret value) pass. This is the mbcp-layer
+    single source of truth; importers/_common.py delegates here.
+    """
+    provenance = record.get("provenance")
+    consent = record.get("consent")
+    if (
+        isinstance(provenance, dict)
+        and provenance.get("sensitivity") == "secret"
+        and isinstance(consent, dict)
+        and consent.get("exportable") is True
+    ):
+        raise ValueError(
+            "invariant violation: provenance.sensitivity='secret' must not be "
+            "combined with consent.exportable=true (Isaac ruling 2026-11-06, "
+            "BACKLOG M2 #6)"
+        )
+    return record
+
+
 def validate_record(record):
     _schema.validate(record, _record_schema())
-    return record
+    return check_sensitivity_invariant(record)
 
 
 def validate_tombstone(tombstone):
@@ -84,16 +110,25 @@ def make_record(
     lifecycle="active",
     retention=None,
     exportable=True,
+    sensitivity=None,
     priority="standard",
     max_chars=4096,
     on_budget_exceed="skip",
     merge="append_first_wins",
 ):
     """Build a conforming record dict. Integrity digest is the SHA-256 of
-    the canonical body."""
+    the canonical body.
+
+    ``sensitivity`` (optional) is recorded in ``provenance.sensitivity``;
+    the sensitivity invariant is enforced here on the build path:
+    ``sensitivity="secret"`` with ``exportable=True`` raises ValueError.
+    """
     consent = {"exportable": exportable}
     if retention is not None:
         consent["retention"] = retention
+    provenance = {"source": source}
+    if sensitivity is not None:
+        provenance["sensitivity"] = sensitivity
     record = {
         "id": record_id,
         "kind": kind,
@@ -101,7 +136,7 @@ def make_record(
         "scope": {"owner": owner},
         "time": {"created": created or utc_now()},
         "lifecycle": lifecycle,
-        "provenance": {"source": source},
+        "provenance": provenance,
         "consent": consent,
         "integrity": {
             "algo": "sha256",
@@ -116,7 +151,7 @@ def make_record(
             }
         },
     }
-    return validate_record(record)
+    return check_sensitivity_invariant(validate_record(record))
 
 
 def make_tombstone(target_id, reason, *, deleted_at=None, derived_artifacts=()):
@@ -131,11 +166,21 @@ def make_tombstone(target_id, reason, *, deleted_at=None, derived_artifacts=()):
 
 
 def build_bundle(bundle_id, records=(), tombstones=(), *, mbcp_version=MBCP_VERSION):
-    """Build and validate a manifest dict."""
+    """Build and validate a manifest dict.
+
+    Every record is checked against the build-path sensitivity invariant
+    (BACKLOG M2 #6): a bundle containing a secret record marked exportable
+    cannot be built. The load path (``load``/``check_record_on_load``) stays
+    a tolerant reader for records already on disk (SPEC 1.5) and does NOT
+    enforce this invariant.
+    """
+    records = list(records)
+    for record in records:
+        check_sensitivity_invariant(record)
     manifest = {
         "bundle": {"id": bundle_id},
         "mbcp_version": mbcp_version,
-        "records": list(records),
+        "records": records,
         "tombstones": list(tombstones),
     }
     return validate_bundle(manifest)
@@ -180,7 +225,14 @@ def _check_dict(obj, key, path, *, required=True):
 
 
 def check_record_on_load(record, path="$.records[]"):
-    """Structurally validate a record for load; raise LoadValidationError."""
+    """Structurally validate a record for load; raise LoadValidationError.
+
+    Tolerant-reader scope (SPEC 1.5): this checks STRUCTURE only. It does
+    NOT enforce the build-path sensitivity invariant (secret + exportable)
+    — that invariant is enforced by make_record/validate_record/build_bundle
+    and must not silently turn the load path into a validator; records that
+    were already on disk keep loading.
+    """
     _check(isinstance(record, dict), path, "expected object")
     _check_str(record, "id", path, min_len=1)
     _check_str(record, "kind", path, min_len=1)

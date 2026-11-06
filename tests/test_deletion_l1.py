@@ -553,3 +553,157 @@ def test_delete_heals_resurrected_record_without_duplicate_receipt():
         assert len(service.receipt_paths()) == 1
         assert len(service.journal_tombstones()) == 1
         assert service.verify_receipt(second)["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for verify round 2 advisory 2: recover() receipt laundering
+# (BACKLOG M2 #4). Semantics (i): verify_receipt ok=True means the receipt
+# accounts for every removal of the target known to the service root —
+# recover() never rewrites receipts, so an under-reporting receipt keeps
+# failing with a problem naming the unreported recovered digest.
+# ---------------------------------------------------------------------------
+
+
+def test_recover_does_not_launder_underreporting_receipt():
+    # The verifier repro, as a regression test: delete -> receipt ok; a NEW
+    # bundle reintroduces the target with a DIFFERENT digest ("STALE
+    # variant"); verify_receipt is ok:False; recover() removes the stale
+    # copy — the original receipt must STILL not verify ok, because it
+    # under-reports the removal recover() just performed.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        receipt = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        assert service.verify_receipt(receipt)["ok"] is True
+
+        stale = make_record(
+            "rec-002", "fact", "STALE variant", OWNER, created=FIXED_TS
+        )
+        stale_digest = stale["integrity"]["digest"]
+        assert stale_digest != receipt["receipt"]["removed_records"][0]["digest"]
+        service.put_bundle(build_bundle("bundle-stale", records=[stale]))
+
+        failing = service.verify_receipt(receipt)
+        assert failing["ok"] is False
+        assert any("still present" in p for p in failing["problems"])
+
+        assert service.recover() == ["rec-002"]
+
+        # The stale digest is in neither the receipt nor delete-time evidence
+        # — that gap is exactly what the recovery log must close durably.
+        recorded_digests = {
+            e["digest"] for e in service._read_evidence("rec-002")["removals"]
+        }
+        assert stale_digest not in recorded_digests
+        assert stale_digest not in {
+            r["digest"] for r in receipt["receipt"]["removed_records"]
+        }
+
+        # (b) the under-reporting receipt must not return to ok:True
+        result = service.verify_receipt(receipt)
+        assert result["ok"] is False
+        assert any("under-report" in p for p in result["problems"])
+        assert any(stale_digest in p for p in result["problems"])
+
+
+def test_recovery_log_records_every_removed_digest_attributably():
+    # (a) after recover(), every digest it removed is retrievable from
+    # durable evidence and attributable to recovery (recovery log line with
+    # target id, digest, recovered_at), distinguishable from delete-time
+    # removals in evidence/.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        service.put_bundle(_manifest())  # stale copy with the ORIGINAL digest
+        assert service.recover() == ["rec-002"]
+
+        assert service.recovery_path.exists()
+        entries = service.recovery_removals("rec-002")
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["record_id"] == "rec-002"
+        assert entry["bundle_id"] == "bundle-alpha"
+        assert entry["digest"] == service._read_evidence("rec-002")["removals"][0][
+            "digest"
+        ]
+        assert entry["recovered_at"] == DELETED_AT
+
+        # the recovery log parses line-by-line straight off disk
+        raw = [
+            json.loads(line)
+            for line in service.recovery_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert raw == [entry]
+
+
+def test_recovery_log_line_written_before_manifest_rewrite():
+    # (c) crash-safety ordering: the recovery log entry is durable BEFORE
+    # the manifest rewrite, so a crash between them still attributes the
+    # removal; re-running recover() finishes the job.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        service.put_bundle(_manifest())  # stale copy back
+        original_atomic_write = deletion_module._atomic_write
+
+        def exploding_atomic_write(path, data):
+            if "bundles" in str(path):
+                raise OSError("simulated crash during recovery rewrite")
+            return original_atomic_write(path, data)
+
+        deletion_module._atomic_write = exploding_atomic_write
+        try:
+            assert_raises(OSError, service.recover)
+        finally:
+            deletion_module._atomic_write = original_atomic_write
+
+        # the removal is already attributable even though the record survives
+        assert "rec-002" in _ids(service, "bundle-alpha")
+        entries = service.recovery_removals("rec-002")
+        assert len(entries) == 1
+        assert entries[0]["recovered_at"] == DELETED_AT
+
+        # retry finishes the deletion; the duplicate log line is tolerated
+        assert service.recover() == ["rec-002"]
+        assert "rec-002" not in _ids(service, "bundle-alpha")
+        assert len(service.recovery_removals("rec-002")) == 1
+
+
+def test_recover_remains_idempotent_and_log_stable():
+    # (c) a second recover() on consistent state is a no-op and appends
+    # nothing to the recovery log.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        service.put_bundle(_manifest())
+        assert service.recover() == ["rec-002"]
+        lines_after_first = service.recovery_path.read_text(encoding="utf-8")
+
+        assert service.recover() == []
+        assert service.recover() == []
+        assert service.recovery_path.read_text(encoding="utf-8") == lines_after_first
+
+
+def test_verify_receipt_ok_on_roots_without_recovery_log():
+    # (d) backward compatibility: service roots created before the recovery
+    # log existed have no recovery.jsonl; receipts there must still verify
+    # and the service must not crash on the missing file.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        receipt = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        assert not service.recovery_path.exists()
+        assert service.recovery_removals() == []
+        result = service.verify_receipt(receipt)
+        assert result["ok"] is True, result
+
+
+def test_recovered_digest_matching_receipt_claim_does_not_fail():
+    # recover() removing a copy whose digest the receipt ALREADY names is
+    # fully accounted for: verification stays ok.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        receipt = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        original = json.loads(json.dumps(_manifest()))
+        service.put_bundle(original)  # exact same digest as at delete time
+        assert service.recover() == ["rec-002"]
+        assert service.verify_receipt(receipt)["ok"] is True

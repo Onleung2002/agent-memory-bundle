@@ -30,6 +30,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mbcp import build_bundle, import_bundle, make_record, utc_now, validate_record
+from mbcp.bundle import (
+    check_sensitivity_invariant as _mbcp_check_sensitivity_invariant,
+)
 
 # Sensitivity vocabulary (provenance.sensitivity) — Isaac ruling 2026-11-06
 # (BACKLOG M2 #6): EXACTLY these four values, enforced by the
@@ -58,25 +61,12 @@ def require_tombstones(tombstones):
 def check_sensitivity_invariant(record):
     """Machine-checkable invariant (BACKLOG M2 #6, Isaac ruling 2026-11-06).
 
-    ``provenance.sensitivity = "secret"`` combined with
-    ``consent.exportable = true`` is REJECTED on the build path: a secret
-    record must never be marked exportable. Deterministic — pure function of
-    the record, raises ValueError on violation. Records with no sensitivity
-    field (or any non-secret value) pass.
+    Delegates to the mbcp-layer check in mbcp.bundle — the build path
+    (make_record / validate_record / build_bundle) is the single source of
+    truth for this rule, so importer records and hand-built records are
+    held to identical enforcement.
     """
-    provenance = record.get("provenance")
-    consent = record.get("consent")
-    if (
-        isinstance(provenance, dict)
-        and provenance.get("sensitivity") == "secret"
-        and isinstance(consent, dict)
-        and consent.get("exportable") is True
-    ):
-        raise ValueError(
-            "invariant violation: provenance.sensitivity='secret' must not be "
-            "combined with consent.exportable=true (Isaac ruling 2026-11-06)"
-        )
-    return record
+    return _mbcp_check_sensitivity_invariant(record)
 
 _TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
