@@ -11,8 +11,11 @@ Every importer must:
 
 Tombstone-first is enforced one level down: importers emit a normal MBCP
 bundle, and ``mbcp.import_bundle`` applies every tombstone (store + incoming)
-before adding anything. Pass tombstones from the deletion service journal in
-``build_import_bundle(..., tombstones=service.all_tombstones())``.
+before adding anything. ``tombstones`` is a REQUIRED argument at every
+importer entry point: omitting it raises TypeError instead of silently
+resurrecting deleted records. Pass tombstones from the deletion service
+journal in ``build_import_bundle(..., tombstones=service.all_tombstones())``
+(SPEC §1.2/§4: re-import must never resurrect deleted records).
 """
 
 import hashlib
@@ -28,12 +31,52 @@ if str(REPO_ROOT) not in sys.path:
 
 from mbcp import build_bundle, import_bundle, make_record, utc_now, validate_record
 
-# Sensitivity vocabulary used by M2 importers (provenance.sensitivity).
-#   personal — user-authored content from a consumer AI product export
-#   private  — local agent/profile state, possibly operational
-# Unknown sources must use at least "personal"; never "public" by default.
-SENSITIVITY_PERSONAL = "personal"
-SENSITIVITY_PRIVATE = "private"
+# Sensitivity vocabulary (provenance.sensitivity) — Isaac ruling 2026-11-06
+# (BACKLOG M2 #6): EXACTLY these four values, enforced by the
+# bundle-record.v0 schema enum on the build path.
+SENSITIVITY_VOCABULARY = ("public", "internal", "sensitive", "secret")
+
+# Protective default for M2 importers. Both chatgpt (user-authored consumer
+# export content) and hermes (local agent state, incl. private memories)
+# default to "sensitive" — never "public", never an out-of-vocabulary value.
+SENSITIVITY_IMPORT_DEFAULT = "sensitive"
+
+# Error raised when the caller omits the required tombstones argument.
+TOMBSTONES_REQUIRED = (
+    "tombstones is REQUIRED: pass service.all_tombstones() so a re-import "
+    "cannot resurrect deleted records (SPEC §1.2/§4)"
+)
+
+
+def require_tombstones(tombstones):
+    """Fail fast when the caller omits the required tombstones argument."""
+    if tombstones is None:
+        raise TypeError(TOMBSTONES_REQUIRED)
+    return tombstones
+
+
+def check_sensitivity_invariant(record):
+    """Machine-checkable invariant (BACKLOG M2 #6, Isaac ruling 2026-11-06).
+
+    ``provenance.sensitivity = "secret"`` combined with
+    ``consent.exportable = true`` is REJECTED on the build path: a secret
+    record must never be marked exportable. Deterministic — pure function of
+    the record, raises ValueError on violation. Records with no sensitivity
+    field (or any non-secret value) pass.
+    """
+    provenance = record.get("provenance")
+    consent = record.get("consent")
+    if (
+        isinstance(provenance, dict)
+        and provenance.get("sensitivity") == "secret"
+        and isinstance(consent, dict)
+        and consent.get("exportable") is True
+    ):
+        raise ValueError(
+            "invariant violation: provenance.sensitivity='secret' must not be "
+            "combined with consent.exportable=true (Isaac ruling 2026-11-06)"
+        )
+    return record
 
 _TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
@@ -137,7 +180,7 @@ def build_record(
     )
     if extra_provenance:
         record["provenance"].update(extra_provenance)
-    return validate_record(record)
+    return check_sensitivity_invariant(validate_record(record))
 
 
 def dedupe_sorted(records):
@@ -152,10 +195,16 @@ def dedupe_sorted(records):
     return out
 
 
-def make_bundle(records, bundle_id, *, tombstones=()):
-    """Validate and build an MBCP manifest from imported records."""
+def make_bundle(records, bundle_id, *, tombstones=None):
+    """Validate and build an MBCP manifest from imported records.
+
+    ``tombstones`` is REQUIRED — omitting it raises TypeError so a re-import
+    without the deletion journal can never happen by accident (SPEC §1.2/§4).
+    """
     return build_bundle(
-        bundle_id, records=dedupe_sorted(records), tombstones=list(tombstones)
+        bundle_id,
+        records=dedupe_sorted(records),
+        tombstones=list(require_tombstones(tombstones)),
     )
 
 

@@ -31,14 +31,15 @@ Parsing rules (deterministic):
 - one record per non-empty conversation, ``kind="conversation"``,
   ``lifecycle="archived"`` when the export says archived.
 - no consent field exists in this export -> ``consent.exportable = false``
-  (SPEC §4); ``provenance.sensitivity = "personal"``.
+  (SPEC §4); ``provenance.sensitivity = "sensitive"`` (protective default in
+  the {public, internal, sensitive, secret} vocabulary).
 """
 
 import json
 from pathlib import Path
 
 from ._common import (
-    SENSITIVITY_PERSONAL,
+    SENSITIVITY_IMPORT_DEFAULT,
     ImportFormatError,
     build_record,
     content_id,
@@ -46,6 +47,7 @@ from ._common import (
     apply_import,
     now_utc,
     read_json,
+    require_tombstones,
     rfc3339,
     validate_record,
 )
@@ -199,7 +201,7 @@ def conversation_to_record(conversation, *, owner, imported_at, default_created)
         imported_at=imported_at,
         source=SOURCE,
         importer=IMPORTER,
-        sensitivity=SENSITIVITY_PERSONAL,
+        sensitivity=SENSITIVITY_IMPORT_DEFAULT,
         kind_priority="opportunistic",
         max_chars=8000,
         on_budget_exceed="truncate_last",
@@ -236,16 +238,21 @@ def build_import_bundle(
     owner,
     imported_at=None,
     default_created=None,
-    tombstones=(),
+    tombstones=None,
 ):
-    """Parse an export into a validated MBCP manifest."""
+    """Parse an export into a validated MBCP manifest.
+
+    ``tombstones`` is REQUIRED (pass ``service.all_tombstones()``); omitting
+    it raises TypeError so a re-import can never resurrect deleted records
+    by accident (SPEC §1.2/§4).
+    """
     records = parse_export(
         path,
         owner=owner,
         imported_at=imported_at,
         default_created=default_created,
     )
-    return make_bundle(records, bundle_id, tombstones=tombstones)
+    return make_bundle(records, bundle_id, tombstones=require_tombstones(tombstones))
 
 
 def import_export(store, path, **kwargs):

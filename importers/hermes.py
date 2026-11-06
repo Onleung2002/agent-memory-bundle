@@ -25,7 +25,9 @@ Parsing rules (deterministic):
   timestamps when present; memory markdown has no timestamps, so entries
   use ``default_created`` (documented import time fallback).
 - no consent field exists in a profile -> ``consent.exportable = false``
-  (SPEC §4); ``provenance.sensitivity = "private"``.
+  (SPEC §4); ``provenance.sensitivity = "sensitive"`` (protective default in
+  the {public, internal, sensitive, secret} vocabulary; local agent state
+  incl. private memories).
 """
 
 import json
@@ -33,7 +35,7 @@ import re
 from pathlib import Path
 
 from ._common import (
-    SENSITIVITY_PRIVATE,
+    SENSITIVITY_IMPORT_DEFAULT,
     ImportFormatError,
     apply_import,
     build_record,
@@ -41,6 +43,7 @@ from ._common import (
     dedupe_sorted,
     make_bundle,
     now_utc,
+    require_tombstones,
     rfc3339,
 )
 
@@ -114,7 +117,7 @@ def _memory_records(root, profile_name, *, owner, imported_at, default_created):
                     imported_at=imported_at,
                     source=SOURCE,
                     importer=IMPORTER,
-                    sensitivity=SENSITIVITY_PRIVATE,
+                    sensitivity=SENSITIVITY_IMPORT_DEFAULT,
                     kind_priority="critical" if is_user else "standard",
                     max_chars=4096,
                     on_budget_exceed="skip",
@@ -227,7 +230,7 @@ def _session_records(root, profile_name, *, owner, imported_at, default_created)
                 imported_at=imported_at,
                 source=SOURCE,
                 importer=IMPORTER,
-                sensitivity=SENSITIVITY_PRIVATE,
+                sensitivity=SENSITIVITY_IMPORT_DEFAULT,
                 kind_priority="opportunistic",
                 max_chars=8000,
                 on_budget_exceed="truncate_last",
@@ -288,9 +291,14 @@ def build_import_bundle(
     imported_at=None,
     default_created=None,
     include_sessions=True,
-    tombstones=(),
+    tombstones=None,
 ):
-    """Parse a Hermes profile into a validated MBCP manifest."""
+    """Parse a Hermes profile into a validated MBCP manifest.
+
+    ``tombstones`` is REQUIRED (pass ``service.all_tombstones()``); omitting
+    it raises TypeError so a re-import can never resurrect deleted records
+    by accident (SPEC §1.2/§4).
+    """
     records = parse_profile(
         path,
         owner=owner,
@@ -298,7 +306,7 @@ def build_import_bundle(
         default_created=default_created,
         include_sessions=include_sessions,
     )
-    return make_bundle(records, bundle_id, tombstones=tombstones)
+    return make_bundle(records, bundle_id, tombstones=require_tombstones(tombstones))
 
 
 def import_profile(store, path, **kwargs):

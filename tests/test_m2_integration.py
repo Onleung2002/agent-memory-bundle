@@ -20,7 +20,7 @@ from importers import chatgpt, hermes
 from mbcp import L1DeletionService, import_bundle, load
 
 
-def _chatgpt_bundle(*, tombstones=()):
+def _chatgpt_bundle(*, tombstones):
     return chatgpt.build_import_bundle(
         CHATGPT_EXPORT,
         owner=OWNER,
@@ -29,7 +29,7 @@ def _chatgpt_bundle(*, tombstones=()):
     )
 
 
-def _hermes_bundle(*, tombstones=()):
+def _hermes_bundle(*, tombstones):
     return hermes.build_import_bundle(
         HERMES_PROFILE,
         owner=OWNER,
@@ -42,7 +42,7 @@ def _hermes_bundle(*, tombstones=()):
 def test_chatgpt_export_delete_receipt_load_pipeline():
     with tempfile.TemporaryDirectory() as tmp:
         service = L1DeletionService(Path(tmp) / "svc", clock=lambda: DELETED_AT)
-        service.put_bundle(_chatgpt_bundle())
+        service.put_bundle(_chatgpt_bundle(tombstones=[]))
 
         receipt = service.delete(
             "chatgpt-export",
@@ -60,7 +60,7 @@ def test_chatgpt_export_delete_receipt_load_pipeline():
 def test_hermes_profile_delete_receipt_load_pipeline():
     with tempfile.TemporaryDirectory() as tmp:
         service = L1DeletionService(Path(tmp) / "svc", clock=lambda: DELETED_AT)
-        bundle = _hermes_bundle()
+        bundle = _hermes_bundle(tombstones=[])
         service.put_bundle(bundle)
         target = next(r["id"] for r in bundle["records"] if r["kind"] == "preference")
 
@@ -75,10 +75,10 @@ def test_hermes_profile_delete_receipt_load_pipeline():
 def test_stale_chatgpt_reimport_cannot_resurrect_deleted_record():
     with tempfile.TemporaryDirectory() as tmp:
         service = L1DeletionService(Path(tmp) / "svc", clock=lambda: DELETED_AT)
-        service.put_bundle(_chatgpt_bundle())
+        service.put_bundle(_chatgpt_bundle(tombstones=[]))
         service.delete("chatgpt-export", "chatgpt:conv-alpha", "synthetic erasure")
 
-        store = import_bundle({"records": [], "tombstones": []}, _chatgpt_bundle())
+        store = import_bundle({"records": [], "tombstones": []}, _chatgpt_bundle(tombstones=[]))
         assert "chatgpt:conv-alpha" in [r["id"] for r in store["records"]]
 
         # re-import the STALE export, carrying the service's tombstones
@@ -96,12 +96,12 @@ def test_importer_without_tombstones_resurrects_hermes_entry():
     # bring it back — the caller must pass service.all_tombstones().
     with tempfile.TemporaryDirectory() as tmp:
         service = L1DeletionService(Path(tmp) / "svc", clock=lambda: DELETED_AT)
-        bundle = _hermes_bundle()
+        bundle = _hermes_bundle(tombstones=[])
         service.put_bundle(bundle)
         target = bundle["records"][0]["id"]
         service.delete("hermes-profile", target, "synthetic erasure")
 
-        naive = import_bundle({"records": [], "tombstones": []}, _hermes_bundle())
+        naive = import_bundle({"records": [], "tombstones": []}, _hermes_bundle(tombstones=[]))
         assert target in [r["id"] for r in naive["records"]]
 
         guarded = import_bundle(
@@ -134,6 +134,7 @@ def test_hermes_content_addressed_id_survives_entry_reordering():
             owner=OWNER,
             imported_at=IMPORTED_AT,
             default_created=IMPORTED_AT,
+            tombstones=[],
         )
         service.put_bundle(original)
         target = next(r["id"] for r in original["records"] if r["kind"] == "fact")
@@ -153,8 +154,8 @@ def test_hermes_content_addressed_id_survives_entry_reordering():
 def test_load_across_both_bundles_after_one_deletion():
     with tempfile.TemporaryDirectory() as tmp:
         service = L1DeletionService(Path(tmp) / "svc", clock=lambda: DELETED_AT)
-        service.put_bundle(_chatgpt_bundle())
-        service.put_bundle(_hermes_bundle())
+        service.put_bundle(_chatgpt_bundle(tombstones=[]))
+        service.put_bundle(_hermes_bundle(tombstones=[]))
         service.delete("chatgpt-export", "chatgpt:conv-alpha", "synthetic erasure")
 
         loaded = load(
@@ -173,7 +174,7 @@ def test_load_across_both_bundles_after_one_deletion():
 def test_receipt_verifies_after_service_restart():
     with tempfile.TemporaryDirectory() as tmp:
         first = L1DeletionService(Path(tmp) / "svc", clock=lambda: DELETED_AT)
-        first.put_bundle(_chatgpt_bundle())
+        first.put_bundle(_chatgpt_bundle(tombstones=[]))
         receipt = first.delete(
             "chatgpt-export", "chatgpt:conv-alpha", "synthetic erasure request"
         )

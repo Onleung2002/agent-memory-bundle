@@ -56,10 +56,10 @@ def test_mapping_order_does_not_change_transcript():
 
 def test_parse_export_is_deterministic_bytes():
     first = chatgpt.build_import_bundle(
-        CHATGPT_EXPORT, owner=OWNER, imported_at=IMPORTED_AT
+        CHATGPT_EXPORT, owner=OWNER, imported_at=IMPORTED_AT, tombstones=[]
     )
     second = chatgpt.build_import_bundle(
-        CHATGPT_EXPORT, owner=OWNER, imported_at=IMPORTED_AT
+        CHATGPT_EXPORT, owner=OWNER, imported_at=IMPORTED_AT, tombstones=[]
     )
     assert canonical_bytes(first) == canonical_bytes(second)
 
@@ -87,9 +87,11 @@ def test_export_without_consent_field_is_not_exportable():
         assert record["consent"] == {"exportable": False}
 
 
-def test_importer_marks_sensitivity_personal():
+def test_importer_marks_sensitivity_sensitive():
+    # Isaac ruling 2026-11-06: vocabulary is {public, internal, sensitive,
+    # secret}; importers default to the protective "sensitive".
     for record in _records():
-        assert record["provenance"]["sensitivity"] == "personal"
+        assert record["provenance"]["sensitivity"] == "sensitive"
         assert record["provenance"]["importer"] == "chatgpt"
         assert record["provenance"]["source"] == "chatgpt-export"
 
@@ -110,7 +112,7 @@ def test_conversation_records_are_opportunistic_and_bounded():
 
 def test_built_bundle_is_schema_valid_and_id_sorted():
     bundle = chatgpt.build_import_bundle(
-        CHATGPT_EXPORT, owner=OWNER, imported_at=IMPORTED_AT
+        CHATGPT_EXPORT, owner=OWNER, imported_at=IMPORTED_AT, tombstones=[]
     )
     ids = [record["id"] for record in bundle["records"]]
     assert ids == sorted(ids)
@@ -158,3 +160,46 @@ def test_import_export_is_tombstone_first():
     merged = import_bundle({"records": [], "tombstones": []}, bundle)
     ids = [record["id"] for record in merged["records"]]
     assert ids == ["chatgpt:conv-beta"], ids
+
+
+def test_rfc3339_string_create_time_roundtrips_verbatim():
+    # Verbatim passthrough: an already-RFC3339 STRING (with sub-seconds) must
+    # survive byte-identically into record["time"]["created"] — the epoch
+    # float tests only cover the numeric branch of rfc3339().
+    conversation = {
+        "id": "conv-ts-string",
+        "title": "timestamp passthrough",
+        "create_time": "2025-01-01T00:00:00.123456Z",
+        "mapping": {
+            "node-1": {
+                "id": "node-1",
+                "parent": None,
+                "message": {
+                    "author": {"role": "user"},
+                    "create_time": 1735689600.0,
+                    "content": {"content_type": "text", "parts": ["ts body"]},
+                },
+            }
+        },
+        "current_node": "node-1",
+    }
+    record = chatgpt.conversation_to_record(
+        conversation,
+        owner=OWNER,
+        imported_at=IMPORTED_AT,
+        default_created=IMPORTED_AT,
+    )
+    assert record["time"]["created"] == "2025-01-01T00:00:00.123456Z"
+
+
+def test_build_import_bundle_requires_tombstones():
+    # Omitting tombstones must fail fast with a message that says tombstones
+    # are required and points at service.all_tombstones().
+    try:
+        chatgpt.build_import_bundle(CHATGPT_EXPORT, owner=OWNER)
+    except TypeError as err:
+        message = str(err)
+        assert "tombstones" in message
+        assert "all_tombstones()" in message
+    else:
+        raise AssertionError("expected TypeError when tombstones is omitted")

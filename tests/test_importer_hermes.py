@@ -23,6 +23,26 @@ def test_split_memory_entries_on_section_delimiter():
     assert entries == ["alpha", "beta", "gamma"], entries
 
 
+def test_inline_section_sign_does_not_split_entry():
+    # Only a line that is exactly "§" is a delimiter; an inline "§" mid-line
+    # (e.g. "cost § budget") must keep the entry whole.
+    entries = hermes.split_memory_entries("cost § budget\n§\nsecond entry")
+    assert entries == ["cost § budget", "second entry"], entries
+
+
+def test_build_import_bundle_requires_tombstones():
+    # Omitting tombstones must fail fast with a message that says tombstones
+    # are required and points at service.all_tombstones().
+    try:
+        hermes.build_import_bundle(HERMES_PROFILE, owner=OWNER)
+    except TypeError as err:
+        message = str(err)
+        assert "tombstones" in message
+        assert "all_tombstones()" in message
+    else:
+        raise AssertionError("expected TypeError when tombstones is omitted")
+
+
 def test_split_memory_entries_without_delimiter_is_one_entry():
     assert hermes.split_memory_entries("single entry\n") == ["single entry"]
 
@@ -64,10 +84,12 @@ def test_memory_ids_are_content_addressed_and_stable_across_relocation():
     assert [r["id"] for r in moved] == [r["id"] for r in _records()]
 
 
-def test_profile_without_consent_is_not_exportable_and_private():
+def test_profile_without_consent_is_not_exportable_and_sensitive():
+    # Isaac ruling 2026-11-06: vocabulary is {public, internal, sensitive,
+    # secret}; hermes defaults to the protective "sensitive".
     for record in _records():
         assert record["consent"] == {"exportable": False}
-        assert record["provenance"]["sensitivity"] == "private"
+        assert record["provenance"]["sensitivity"] == "sensitive"
         assert record["provenance"]["importer"] == "hermes"
 
 
@@ -108,6 +130,7 @@ def test_built_bundle_is_schema_valid_and_sorted():
         owner=OWNER,
         imported_at=IMPORTED_AT,
         default_created=IMPORTED_AT,
+        tombstones=[],
     )
     ids = [record["id"] for record in bundle["records"]]
     assert ids == sorted(ids)
@@ -117,10 +140,10 @@ def test_built_bundle_is_schema_valid_and_sorted():
 
 def test_parse_profile_is_deterministic_bytes():
     first = hermes.build_import_bundle(
-        HERMES_PROFILE, owner=OWNER, imported_at=IMPORTED_AT
+        HERMES_PROFILE, owner=OWNER, imported_at=IMPORTED_AT, tombstones=[]
     )
     second = hermes.build_import_bundle(
-        HERMES_PROFILE, owner=OWNER, imported_at=IMPORTED_AT
+        HERMES_PROFILE, owner=OWNER, imported_at=IMPORTED_AT, tombstones=[]
     )
     assert canonical_bytes(first) == canonical_bytes(second)
 
@@ -149,6 +172,7 @@ def test_import_profile_is_tombstone_first():
         owner=OWNER,
         imported_at=IMPORTED_AT,
         default_created=IMPORTED_AT,
+        tombstones=[],
     )
     target = bundle["records"][0]["id"]
     bundle["tombstones"] = [
