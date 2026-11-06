@@ -1,0 +1,111 @@
+[
+  {
+    "id": "conv-alpha",
+    "title": "Synthetic conversation alpha",
+    "create_time": 1735689600.25,
+    "update_time": 1735689999.75,
+    "is_archived": false,
+    "current_node": "node-a2",
+    "mapping": {
+      "node-root": {
+        "id": "node-root",
+        "parent": null,
+        "message": null
+      },
+      "node-a1": {
+        "id": "node-a1",
+        "parent": "node-root",
+        "message": {
+          "id": "msg-a1",
+          "author": {"role": "user", "name": null},
+          "create_time": 1735689600.5,
+          "content": {"content_type": "text", "parts": ["Synthetic question alpha"]}
+        }
+      },
+      "node-a2": {
+        "id": "node-a2",
+        "parent": "node-a1",
+        "message": {
+          "id": "msg-a2",
+          "author": {"role": "assistant", "name": null},
+          "create_time": 1735689601.0,
+          "content": {"content_type": "text", "parts": ["Synthetic answer alpha"]}
+        }
+      },
+      "node-a2-offbranch": {
+        "id": "node-a2-offbranch",
+        "parent": "node-a1",
+        "message": {
+          "id": "msg-a2b",
+          "author": {"role": "assistant", "name": null},
+          "create_time": 1735699000.0,
+          "content": {"content_type": "text", "parts": ["OFF-BRANCH synthetic answer"]}
+        }
+      }
+    }
+  },
+  {
+    "id": "conv-beta",
+    "title": "Synthetic conversation beta",
+    "create_time": 1735776000,
+    "update_time": 1735776060,
+    "is_archived": true,
+    "current_node": "node-b2",
+    "mapping": {
+      "node-b0": {"id": "node-b0", "parent": null, "message": null},
+      "node-b1": {
+        "id": "node-b1",
+        "parent": "node-b0",
+        "message": {
+          "id": "msg-b1",
+          "author": {"role": "user", "name": null},
+          "create_time": 1735776000,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              "Synthetic prompt with an image",
+              {"content_type": "image_asset_pointer", "asset_pointer": "file-synthetic-001"}
+            ]
+          }
+        }
+      },
+      "node-b2": {
+        "id": "node-b2",
+        "parent": "node-b1",
+        "message": {
+          "id": "msg-b2",
+          "author": {"role": "assistant", "name": null},
+          "create_time": 1735776010,
+          "content": {"content_type": "text", "parts": ["Synthetic answer beta"]}
+        }
+      }
+    }
+  },
+  {
+    "id": "conv-empty",
+    "title": "Synthetic empty conversation",
+    "create_time": 1735862400,
+    "current_node": "node-e0",
+    "mapping": {
+      "node-e0": {"id": "node-e0", "parent": null, "message": null}
+    }
+  },
+  {
+    "id": "conv-system-only",
+    "title": "Synthetic system-only conversation",
+    "create_time": 1735862400,
+    "current_node": "node-s1",
+    "mapping": {
+      "node-s1": {
+        "id": "node-s1",
+        "parent": null,
+        "message": {
+          "id": "msg-s1",
+          "author": {"role": "system", "name": null},
+          "create_time": 1735862400,
+          "content": {"content_type": "text", "parts": ["Platform scaffolding, not memory"]}
+        }
+      }
+    }
+  }
+]

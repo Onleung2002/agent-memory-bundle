@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mbcp.dev/schemas/deletion-receipt.v0.json",
+  "title": "MBCP L1 deletion receipt (v0)",
+  "description": "Receipt artifact emitted by the L1 deletion service. Scope is DELIBERATELY narrow: it proves the record is gone from one bundle and that a tombstone survives, and records (without proving) derived-artifact erasure. It is not an L4 erasure certificate.",
+  "type": "object",
+  "required": ["receipt", "integrity"],
+  "additionalProperties": false,
+  "properties": {
+    "receipt": {
+      "type": "object",
+      "required": [
+        "id",
+        "spec_version",
+        "level",
+        "issued_at",
+        "bundle_id",
+        "target_id",
+        "reason",
+        "tombstone",
+        "tombstone_digest",
+        "removed_records",
+        "derived_artifacts",
+        "derived_artifacts_verified",
+        "propagation",
+        "limitations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spec_version": {
+          "const": "0.1"
+        },
+        "level": {
+          "enum": ["L1"]
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "bundle_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        },
+        "tombstone": {
+          "$ref": "#/$defs/tombstone"
+        },
+        "tombstone_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "removed_records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "digest"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        "derived_artifacts": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "derived_artifacts_verified": {
+          "const": false,
+          "description": "L1 cannot prove L3. Always false in a v0 L1 receipt."
+        },
+        "propagation": {
+          "type": "object",
+          "required": ["propagated_to"],
+          "additionalProperties": false,
+          "properties": {
+            "propagated_to": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["algo", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "algo": {"const": "sha256"},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  },
+  "$defs": {
+    "tombstone": {
+      "type": "object",
+      "required": ["target_id", "deleted_at", "reason", "derived_artifacts"],
+      "additionalProperties": false,
+      "properties": {
+        "target_id": {"type": "string", "minLength": 1},
+        "deleted_at": {"type": "string", "format": "date-time"},
+        "reason": {"type": "string"},
+        "derived_artifacts": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}
