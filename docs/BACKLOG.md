@@ -29,6 +29,12 @@
 - `DeletionIncompleteError`（L1 contract 一部分，spec-worthy）
 - L1 receipt 概念（SPEC 1.2 只定義 L4 receipt；L1 receipt + limitations + derived_artifacts_verified:false 係中間概念；若成為交換 artifact 要 RFC）
 
+## M2 verify round 3（2026-11-06，verifier=GLM；commit 19c67d1 PASS；M2 全 range d081177..19c67d1 PASS-WITH-ADVISORIES）
+1. **receipt re-issuance under semantics (i)**（design，fail-closed 非 defect）：recover() 刪走 receipt 未報嘅 digest 後，該 target 永遠無 receipt 可以 ok:True、`delete()` retry 永遠 DeletionIncompleteError——ok:True = 「accounting 埋所有已知 removal」成立，但無 API path 拿到新嘅可驗 attestation。re-issuance 需要 verify_receipt semantics 精化（supersession chain / claimed⊇evidence），係設計決定唔係 bugfix。→ 待 Isaac 裁決。
+2. **schema-enum test 應該讀 schema 檔**：`test_vocabulary_values_match_schema_enum`（tests/test_sensitivity_invariant.py:190-197）拎 in-code tuple 比 hardcoded literal，從未讀 `schemas/bundle-record.v0.json`——enum 增項偵測唔到。改成 load schema JSON 斷言相等（`test_sensitivity_schema.py:32-33` 同病）。
+3. **recover() error hygiene**：`mbcp/deletion.py:626-628` manifest `json.loads` 無 try/except，corrupt manifest 會炸 raw `JSONDecodeError` 而唔係 `DeletionError`（同 `_bundle_manifests` :241-249 唔一致；c33d806 已存在，非 round 3 引入）。
+4. **[carried from round 2] raw mbcp `build_bundle(tombstones=())`**：importer 面已 required，mbcp 核心層未——決定 mbcp 層係咪都要 required，定文檔寫明 asymmetry 係 importer-scope。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
