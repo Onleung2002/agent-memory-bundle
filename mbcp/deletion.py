@@ -39,7 +39,19 @@ On-disk layout of a service root::
     bundles/<bundle-id>.json     # MBCP manifests
     tombstones.jsonl             # append-only tombstone journal (fsynced)
     evidence/<sha256(id)>.json   # per-target removal evidence (digests)
+    recovery.jsonl               # recovery log: digest copies removed by recover()
     receipts/<receipt-id>.json   # L1 erasure receipts
+
+Receipt vs recovery semantics (BACKLOG M2 #4, verify round 2 advisory 2):
+
+``verify_receipt`` uses semantics **(i)**: a receipt verifies ``ok: True``
+only if its ``removed_records`` account for EVERY removal of the target
+known to the service root — both the delete()-time removals recorded in
+``evidence/`` and any digest copies removed later by :meth:`recover`
+(recorded in ``recovery.jsonl``). ``recover`` never rewrites or re-issues
+receipts: a receipt that under-reports a recovered removal keeps failing
+verification with a problem naming the unreported digest, instead of
+laundering the removal back into ``ok: True``.
 """
 
 import hashlib
@@ -194,6 +206,7 @@ class L1DeletionService:
         self.bundles_dir = self.root / "bundles"
         self.journal_path = self.root / "tombstones.jsonl"
         self.evidence_dir = self.root / "evidence"
+        self.recovery_path = self.root / "recovery.jsonl"
         self.receipts_dir = self.root / "receipts"
         self._clock = clock
 
@@ -342,6 +355,76 @@ class L1DeletionService:
             for entry in evidence["removals"]
             if entry["tombstone_digest"] == tombstone_digest
         ]
+
+    # -- recovery log -------------------------------------------------------
+    def _record_recovery(self, bundle_id, record):
+        """Append a durable recovery log line for one removed record.
+
+        Each line carries the target id, the digest of the copy recover()
+        removed, the bundle it was removed from and ``recovered_at``, so the
+        removal is retrievable and attributable to recovery — and
+        distinguishable from delete()-time removals in ``evidence/``.
+        Written BEFORE the manifest rewrite (journal-first): a crash can
+        only leave a duplicate or an over-reported recovery, never a
+        launched removal. A re-run after a crash may append a duplicate
+        line; readers tolerate and dedupe.
+        """
+        entry = {
+            "target_id": record["id"],
+            "record_id": record["id"],
+            "digest": record["integrity"]["digest"],
+            "bundle_id": bundle_id,
+            "recovered_at": self._clock(),
+        }
+        self.recovery_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.recovery_path, "ab") as fh:
+            fh.write(canonical_bytes(entry) + b"\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        _fsync_dir(self.recovery_path.parent)
+
+    def _read_recovery(self):
+        """All recovery log entries, in write order.
+
+        A service root created before the recovery log existed has no
+        ``recovery.jsonl``; that is normal and yields an empty list — the
+        service must not crash on pre-existing roots.
+        """
+        if not self.recovery_path.exists():
+            return []
+        entries = []
+        for lineno, line in enumerate(
+            self.recovery_path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as err:
+                raise DeletionError(
+                    f"corrupt recovery log {self.recovery_path}:{lineno}: {err}"
+                ) from err
+            required = {"target_id", "record_id", "digest", "bundle_id", "recovered_at"}
+            if not isinstance(entry, dict) or not required <= set(entry):
+                raise DeletionError(
+                    f"corrupt recovery log {self.recovery_path}:{lineno}: bad entry"
+                )
+            entries.append(entry)
+        return entries
+
+    def recovery_removals(self, target_id=None):
+        """Recovery log entries (deduped by bundle/record/digest), optionally
+        scoped to one target id."""
+        seen = set()
+        entries = []
+        for entry in self._read_recovery():
+            key = (entry["bundle_id"], entry["record_id"], entry["digest"])
+            if key in seen:
+                continue
+            seen.add(key)
+            if target_id is None or entry["target_id"] == target_id:
+                entries.append(entry)
+        return entries
 
     # -- deletion ---------------------------------------------------------
     def delete(
@@ -526,6 +609,14 @@ class L1DeletionService:
         executable form of the tombstone-first promise: a tombstone is
         durable before the manifest rewrite, so recovery can always finish
         the deletion.
+
+        Every copy removed here is first recorded durably in the recovery
+        log (``recovery.jsonl``), before the manifest rewrite — so a removal
+        recover() performed can never vanish without evidence, and
+        ``verify_receipt`` can hold receipts accountable for it (semantics
+        (i), see module docstring). Idempotent: a second ``recover()`` on
+        consistent state finds nothing to remove, writes nothing, and
+        returns ``[]``.
         """
         journal = _merge_tombstones(self.journal_tombstones())
         if not journal or not self.bundles_dir.exists():
@@ -535,10 +626,12 @@ class L1DeletionService:
         for path in sorted(self.bundles_dir.glob("*.json")):
             manifest = json.loads(path.read_text(encoding="utf-8"))
             validate_bundle(manifest)
-            present = [r["id"] for r in manifest.get("records", []) if r["id"] in targets]
-            changed = bool(present)
-            if present:
-                removed.extend(present)
+            stale = [r for r in manifest.get("records", []) if r["id"] in targets]
+            changed = bool(stale)
+            if stale:
+                for record in stale:
+                    self._record_recovery(manifest["bundle"]["id"], record)
+                removed.extend(r["id"] for r in stale)
                 manifest["records"] = [
                     r for r in manifest.get("records", []) if r["id"] not in targets
                 ]
@@ -563,8 +656,11 @@ class L1DeletionService:
         ``deleted_at``, ``reason`` and ``derived_artifacts`` are bound to
         durable evidence rather than to the receipt itself),
         ``removed_records`` vs the recorded removal evidence (per-target
-        digests written before the manifest rewrite), and absence of the
-        target from every bundle under the service root.
+        digests written before the manifest rewrite) and vs the recovery
+        log (digests removed later by :meth:`recover` — semantics (i), see
+        module docstring: every removal known to the service root must be
+        accounted for in ``removed_records``), and absence of the target
+        from every bundle under the service root.
         """
         if isinstance(receipt, (str, os.PathLike)):
             receipt = json.loads(Path(receipt).read_text(encoding="utf-8"))
@@ -625,6 +721,35 @@ class L1DeletionService:
             if recorded != claimed:
                 problems.append(
                     "removed_records do not match recorded deletion evidence"
+                )
+
+        # Semantics (i): ok=True means the receipt accounts for EVERY
+        # removal of this target known to the service root. Copies removed
+        # later by recover() are recorded in the recovery log; a receipt
+        # that does not name them under-reports and must not verify ok.
+        try:
+            recovered = self._read_recovery()
+        except DeletionError as err:
+            recovered = None
+            problems.append(f"recovery log unreadable: {err}")
+        if recovered is not None:
+            claimed_pairs = {
+                (record["id"], record["digest"])
+                for record in body["removed_records"]
+            }
+            unreported = sorted(
+                {
+                    (entry["record_id"], entry["digest"])
+                    for entry in recovered
+                    if entry["target_id"] == body["target_id"]
+                    and (entry["record_id"], entry["digest"]) not in claimed_pairs
+                }
+            )
+            for record_id, digest in unreported:
+                problems.append(
+                    f"recovery removed digest {digest} of target {record_id!r} "
+                    "that the receipt does not report (receipt under-reports "
+                    "known removals)"
                 )
 
         if not self.bundle_path(body["bundle_id"]).exists():
