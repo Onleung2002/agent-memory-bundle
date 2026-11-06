@@ -80,6 +80,16 @@
         "generated_at": {
           "type": "string",
           "format": "date-time"
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "internal",
+            "sensitive",
+            "secret"
+          ],
+          "description": "Isaac ruling 2026-11-06 (BACKLOG M2 #6): the sensitivity vocabulary is exactly {public, internal, sensitive, secret}. Optional; records without the field stay valid. Invariant enforced on the build path: sensitivity='secret' must not be combined with consent.exportable=true."
         }
       }
     },

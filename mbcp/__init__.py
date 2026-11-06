@@ -19,6 +19,14 @@ from .bundle import (
     validate_tombstone,
 )
 from .tombstone import apply_tombstones, import_bundle
+from .deletion import (
+    DeletionError,
+    DeletionIncompleteError,
+    L1DeletionService,
+    ReceiptValidationError,
+    UnknownTargetError,
+    build_receipt,
+)
 
 __all__ = [
     "canonical_bytes",
@@ -37,4 +45,10 @@ __all__ = [
     "validate_tombstone",
     "apply_tombstones",
     "import_bundle",
+    "DeletionError",
+    "DeletionIncompleteError",
+    "L1DeletionService",
+    "ReceiptValidationError",
+    "UnknownTargetError",
+    "build_receipt",
 ]
