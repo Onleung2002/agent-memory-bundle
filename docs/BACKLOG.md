@@ -12,7 +12,7 @@
 3. **receipt 證據要綁返 journal**：verify_receipt 只比對 deleted_at 字串；tombstone_digest（deletion.py 設咗從未讀）、tombstone.reason、derived_artifacts、removed_records[].digest 全部無綁定 → 偽造 receipt 重算 self-digest 就過。至少要驗 tombstone_digest/reason 對 journal；removed_records[].digest 要刪除時 hash 入 tombstone 或文檔寫明刪後不可驗。
 4. **recovery 會洗白舊 receipt**：crash 後 recover() 一行，先前 verify_receipt=False 嘅 receipt 會變 True，無任何 recovery 痕跡。收緊方案：recovered receipt 加標記，或 journal 之外留 recovery log。
 5. **durability 無測試**：journal os.fsync 冇任何測試 cover（mutation 移除 fsync 無 test 失敗）。加 fsync contract test（monkeypatch os.fsync，斷言 journal fd 喺 manifest write 之前有 fsync）。
-6. **sensitivity 詞彙無喺 schema 落戶**：provenance.sensitivity（personal/private）係 importer 自創詞彙，schema 無 enum 約束。→ 本輪 fix 直接入 schema（見 M2 fix brief ②）。
+6. **sensitivity 詞彙無喺 schema 落戶**：provenance.sensitivity（personal/private）係 importer 自創詞彙，schema 無 enum 約束。→ 本輪 fix 直接入 schema（見 M2 fix brief ②）。Isaac 裁決（2026-11-06）：詞彙 = {public, internal, sensitive, secret}；machine-checkable invariant：`sensitivity=secret` 而 `consent.exportable=true` → build-path reject（加測試）。 importer 現有 default（chatgpt=personal、hermes=private）要 remap 入新詞彙。
 7. **per-file test inventory 無機器可查數**：worker 報稱 test count 同實際 def test_ 數有出入（chatgpt 16/實 17、hermes 17/實 16、deletion 20/實 21）。建議 tools/test_inventory.py 輸出 per-file 數，guard 一齊檢查。
 
 ## 工序教訓（worker 品質 pattern）
