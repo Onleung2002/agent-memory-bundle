@@ -38,6 +38,9 @@ load_policy:
   - L3 衍生工件清除證明（derived artifacts 清單全數勾銷）
   - L4 回執（erasure receipt：可交俾第三者驗證「刪除已發生」）
 
+### 1.2.1 L1 已知限制（v0.1）
+L1 receipt 係 immutable artifact——`recover()` 移除咗 receipt 未報告嘅 digest 之後，該 target 嘅在冇 receipt 永遠無法通過 `verify_receipt`（fail-closed，唔會出假 ok），且冇 re-issuance/healing path；re-issuance 語意（supersession）與 L2 跨 bundle propagation 一併設計。
+
 ### 1.3 consent 繼承（UMP）+ 跨 profile 一致
 UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：consent 違反 = conformance fail（唔係 warning）。
 
