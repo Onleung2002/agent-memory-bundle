@@ -23,3 +23,14 @@ jobs:
         run: python3 tools/run_tests.py
       - name: Conformance scenarios
         run: python3 tools/run_scenarios.py
+      - name: Workflow lint (actionlint)
+        run: |
+          curl -sSL -o /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -color
+      - name: Test inventory cross-check (counted == executed)
+        run: |
+          counted=$(python3 tools/test_inventory.py | grep '^unit tests' | grep -oE '[0-9]+$')
+          passed=$(python3 tools/run_tests.py | tail -n 1 | grep -oE '^[0-9]+')
+          echo "inventory counted=$counted, runner executed=$passed"
+          test "$counted" = "$passed"
