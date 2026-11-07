@@ -15,7 +15,7 @@ Protocol：worker = Kimi（GLM Coding Plan 對手方 API），verifier = GLM；�
 | Commit | 內容 | 作者 |
 |---|---|---|
 | `d081177` | M2 base：importers + L1 deletion + 61 新測試 | worker (deepseek, M2 原始輪) |
-| `9a74d87` | Fix round 1：truthful delete receipts + journal-bound verification（F1/F2） | worker (Kimi) |
+| `9a74d87` | Fix round 1：truthful delete receipts + journal-bound verification（F1/F2） | worker (deepseek, deleg_b9af5f88) |
 | `7ccbf8b` | docs：BACKLOG commit（M1 round-2 + M2 advisories） | controller |
 | `7961be3` | docs：BACKLOG #6 對齊 Isaac 裁決（sensitivity 詞彙 {public, internal, sensitive, secret}） | controller |
 | `85aff37` | Fix round 2：tombstones required kwarg（F4）+ sensitivity 詞彙入 schema + 6 個 false-green 測試 gap + `tools/test_inventory.py` | worker (Kimi) |
@@ -70,3 +70,8 @@ L1 receipt 係 immutable artifact（semantics (i)）：`recover()` 移除咗 rec
 - 測試一律 plain `python3`（pytest 冇裝）：`tools/run_tests.py`、`tools/run_scenarios.py`、`tools/test_count_guard.sh`、`tools/test_inventory.py`
 - GitHub push 由 Isaac 做（controller container 無 credentials）；local main `e8678b5` 待 push + CI 確認
 - 終態測試數：147 unit + 9 scenarios = 156；guard baseline origin/main→HEAD = 54→156
+
+## 9. 事件紀錄（retrospective audit 修正後）
+
+- **Working-tree 撞車（root cause = controller 排程）**：V1 mutation verify session（proc_e855cec1e655）仲行緊（差約 30 秒完成）時，controller 已 dispatch fix round 1 worker（deleg_b9af5f88）。兩個 agent 撞同一 working tree；controller 其後 restore 自己嘅 mutations，worker 被迫改用 scratch clone 落地 `9a74d87`。歸屬更正：改 branch 嘅係 controller 自己派嘅 worker，唔係第三方 rogue session。教訓已寫入 protocol（見 HANDOVER.md）：fix worker 只准 verdict 整合後 dispatch；同一 working tree 一次只准一個 agent；事件調查第一步查自己 dispatch 記錄。
+- **歸屬更正**：`9a74d87` 原記「worker (Kimi)」，實際 deleg_b9af5f88 = deepseek（controller 當時親口報「Fix round 已派 worker（deepseek）」）。記錄必須跟事實。
