@@ -1,0 +1,113 @@
+{
+  "id": "DEL-05",
+  "spec_version": "0.1",
+  "title": "import removes a store record targeted by an incoming tombstone; the tombstone itself is retained",
+  "comment": "A-19 / SPEC 1.2 — tombstone-first deletion covers BOTH sides — any store record whose id is targeted by a (store or incoming) tombstone is removed, incoming records are then added, and the tombstone persists in the merged state (L2 propagation is built on this).",
+  "op": "import",
+  "input": {
+    "store": {
+      "records": [
+        {
+          "id": "rec-x",
+          "kind": "fact",
+          "body": "legacy store body awaiting erasure",
+          "scope": {
+            "owner": "user-synthetic-01"
+          },
+          "time": {
+            "created": "2026-11-05T08:00:00Z"
+          },
+          "lifecycle": "active",
+          "provenance": {
+            "source": "synthetic-fixture"
+          },
+          "consent": {
+            "exportable": true
+          },
+          "integrity": {
+            "algo": "sha256",
+            "digest": "cbb63d10aa452db4a580d8d8cd338e8e0ad40eac7dc234ae64394d7f6a3c340c"
+          },
+          "mbcp": {
+            "load_policy": {
+              "priority": "standard",
+              "max_chars": 4096,
+              "on_budget_exceed": "skip",
+              "merge": "append_first_wins"
+            }
+          }
+        }
+      ],
+      "tombstones": []
+    },
+    "bundle": {
+      "bundle": {
+        "id": "sc-del-05"
+      },
+      "mbcp_version": "0.1",
+      "records": [
+        {
+          "id": "rec-y",
+          "kind": "fact",
+          "body": "incoming bundle survivor body",
+          "scope": {
+            "owner": "user-synthetic-01"
+          },
+          "time": {
+            "created": "2026-11-05T08:00:00Z"
+          },
+          "lifecycle": "active",
+          "provenance": {
+            "source": "synthetic-fixture"
+          },
+          "consent": {
+            "exportable": true
+          },
+          "integrity": {
+            "algo": "sha256",
+            "digest": "6ef9c8e16a9b963fe43100edcbff3057f3c718db7f6848d137e72cf55bc76982"
+          },
+          "mbcp": {
+            "load_policy": {
+              "priority": "standard",
+              "max_chars": 4096,
+              "on_budget_exceed": "skip",
+              "merge": "append_first_wins"
+            }
+          }
+        }
+      ],
+      "tombstones": [
+        {
+          "target_id": "rec-x",
+          "deleted_at": "2026-11-06T00:00:00Z",
+          "reason": "erasure propagated from another root",
+          "derived_artifacts": [
+            "chunk:rec-x:0",
+            "emb:rec-x"
+          ]
+        }
+      ]
+    }
+  },
+  "expect": {
+    "record_ids": [
+      "rec-y"
+    ],
+    "tombstones": [
+      {
+        "target_id": "rec-x",
+        "reason": "erasure propagated from another root",
+        "derived_artifacts": [
+          "chunk:rec-x:0",
+          "emb:rec-x"
+        ]
+      }
+    ],
+    "compare": [
+      "target_id",
+      "reason",
+      "derived_artifacts"
+    ]
+  }
+}

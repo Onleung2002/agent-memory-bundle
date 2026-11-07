@@ -1,0 +1,56 @@
+{
+  "id": "DEL-06",
+  "spec_version": "0.1",
+  "title": "tombstone dedupe tie — equal deleted_at resolves by greatest canonical SHA-256, independent of input order",
+  "comment": "A-16 / SPEC 1.2 — copies tied on deleted_at (compared as an RFC3339 instant) resolve by the GREATEST canonical SHA-256 of the tombstone — the same content-digest tiebreak principle as manifest ordering. Both tombstone digests were computed with canonical_sha256 over the full tombstone dict — copy-alpha=ee7a10a5..., copy-beta=f6f1fbee..., so copy-beta wins even though it is listed SECOND here (input-order-first-wins would pick copy-alpha). The derived_artifacts union must survive. Cross-order determinism (both input orders byte-identical) is covered by the unit test test_tombstone_dedupe_equal_deleted_at_tiebreaks_on_canonical_sha256.",
+  "op": "import",
+  "input": {
+    "store": {
+      "records": [],
+      "tombstones": [
+        {
+          "target_id": "rec-tie",
+          "deleted_at": "2026-06-01T00:00:00Z",
+          "reason": "copy-alpha",
+          "derived_artifacts": [
+            "chunk:rec-tie:0"
+          ]
+        },
+        {
+          "target_id": "rec-tie",
+          "deleted_at": "2026-06-01T00:00:00Z",
+          "reason": "copy-beta",
+          "derived_artifacts": [
+            "emb:rec-tie"
+          ]
+        }
+      ]
+    },
+    "bundle": {
+      "bundle": {
+        "id": "sc-del-06"
+      },
+      "mbcp_version": "0.1",
+      "records": [],
+      "tombstones": []
+    }
+  },
+  "expect": {
+    "record_ids": [],
+    "tombstones": [
+      {
+        "target_id": "rec-tie",
+        "reason": "copy-beta",
+        "derived_artifacts": [
+          "chunk:rec-tie:0",
+          "emb:rec-tie"
+        ]
+      }
+    ],
+    "compare": [
+      "target_id",
+      "reason",
+      "derived_artifacts"
+    ]
+  }
+}

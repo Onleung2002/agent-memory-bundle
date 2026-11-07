@@ -236,7 +236,11 @@ def check_record_on_load(record, path="$.records[]"):
     _check(isinstance(record, dict), path, "expected object")
     _check_str(record, "id", path, min_len=1)
     _check_str(record, "kind", path, min_len=1)
-    _check_str(record, "body", path)
+    # A-07 (SPEC 1.6): a non-string body is NOT malformed structure on the
+    # load path — the record is DROPPED silently later in load(), not
+    # rejected. Only a MISSING body is a validation error here; the build
+    # path (validate_record) still rejects non-string bodies outright.
+    _check("body" in record, path, "missing required property 'body'")
     scope = _check_dict(record, "scope", path)
     _check_str(scope, "owner", f"{path}.scope", min_len=1)
     time_ = _check_dict(record, "time", path)
@@ -420,6 +424,9 @@ def load(bundles):
             if record["id"] in tombstoned:
                 continue
             if record.get("lifecycle") == "deleted":
+                continue
+            # A-07 (SPEC 1.6): non-string body -> silent drop, no exception
+            if not isinstance(record["body"], str):
                 continue
             if not _digest_ok(record):
                 continue

@@ -47,3 +47,22 @@ def test_untouched_records_keep_original_digest():
     original_digest = record["integrity"]["digest"]
     records = load([build_bundle("bundle-orig", records=[record])])
     assert records[0]["integrity"]["digest"] == original_digest
+
+
+def test_sc_int_03_non_string_body_is_dropped_silently():
+    # A-07 (SPEC 1.6): a record whose body is not a string is DROPPED on
+    # the load path — no exception, remaining records load. (The dropped-
+    # ids report channel is deferred to v0.2, SPEC 3a.)
+    # build path (validate_record) rejects a non-string body outright
+    # (SPEC 1.5); simulate an on-disk record by swapping the body after
+    # build and re-digesting so the digest itself stays valid.
+    numeric = syn_record("rec-num", "placeholder")
+    numeric["body"] = 42
+    numeric["integrity"]["digest"] = hashlib.sha256(
+        canonical_bytes(42)
+    ).hexdigest()
+    good = syn_record("rec-good", "ordinary string body")
+    manifest = build_bundle("bundle-mixed", records=[good])
+    manifest["records"].insert(0, numeric)
+    records = load([manifest])
+    assert [r["id"] for r in records] == ["rec-good"]

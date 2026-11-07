@@ -20,8 +20,11 @@ YAML 1.2), so the runner stays pure-stdlib. Format:
         "record_ids": [...],            # exact ordered ids (both ops)
         "bodies": {"id": "..."},        # exact body per id (load)
         "digests_valid": true,          # every digest matches its body (load)
+        "digests": {"id": "hex..."},    # explicit expected digest per id (load)
         "truncated": ["id"],            # ids marked integrity.truncated (load)
-        "tombstones": [{"target_id", "reason", "derived_artifacts"}]  # import
+        "tombstones": [{...}],          # import
+        "compare": ["k", ...]           # tombstone keys to compare (import,
+                                        # SPEC 3 A-05: declared keys only)
       }
     }
 """
@@ -69,6 +72,12 @@ def _check_load(scenario, expect):
             if _body_digest(r["body"]) != r["integrity"]["digest"]:
                 failures.append(f"{r['id']}: digest does not match body")
 
+    # explicit per-id expected digests (raw-UTF8 canonical bytes, SPEC 1.4)
+    for rid, want_hex in expect.get("digests", {}).items():
+        got_hex = by_id.get(rid, {}).get("integrity", {}).get("digest")
+        if got_hex != want_hex:
+            failures.append(f"digest[{rid}]: want {want_hex}, got {got_hex}")
+
     if "truncated" in expect:
         want = set(expect["truncated"])
         for r in records:
@@ -97,20 +106,24 @@ def _check_import(scenario, expect):
             failures.append(f"record_ids: want {expect['record_ids']}, got {ids}")
 
     if "tombstones" in expect:
-        got = [
-            {
-                "target_id": t["target_id"],
-                "reason": t["reason"],
-                "derived_artifacts": sorted(t["derived_artifacts"]),
-            }
-            for t in merged["tombstones"]
-        ]
-        want = [
-            {**e, "derived_artifacts": sorted(e["derived_artifacts"])}
-            for e in expect["tombstones"]
-        ]
-        if got != want:
-            failures.append(f"tombstones: want {want}, got {got}")
+        # SPEC 3 (A-05): tombstones compare ONLY on the keys declared in
+        # the scenario's explicit "compare" list — no implicit subset match.
+        compare = expect.get("compare")
+        if not compare:
+            failures.append(
+                "tombstones: scenario must declare an explicit compare key list"
+            )
+        else:
+            def _project(t):
+                proj = {k: t[k] for k in compare}
+                if "derived_artifacts" in proj:
+                    proj["derived_artifacts"] = sorted(proj["derived_artifacts"])
+                return proj
+
+            got = [_project(t) for t in merged["tombstones"]]
+            want = [_project(e) for e in expect["tombstones"]]
+            if got != want:
+                failures.append(f"tombstones: want {want}, got {got}")
     return failures
 
 
