@@ -26,12 +26,17 @@ load_policy:
 - **Class budget**：`max_chars` 係成個 priority class 嘅預算，唔係 per-record。有效 class budget = 該 class 所有入選 records 中嘅**最小** `max_chars`（最保守、與輸入順序無關），逐 record 累積消耗。任何 record 唔可以藉住自己報大數嚟繞過同 class 嘅細預算（no budget laundering）。
 - **Mixed merge modes**（deterministic resolution）：同一 id 嘅 copies 中，任何一個 declare `error_on_conflict` → 即刻 `MergeConflict`；否則**全部** declare `append_last_wins` → 最後者勝；其餘情況（包括 first/last 混合）→ 最先者勝。
 - **Duplicate bundle id tiebreak**：manifests 排序 key = `(bundle.id, canonical SHA-256 of manifest)`。相同 bundle id 嘅多個 manifest 以內容 digest 決勝負，結果與 input 順序完全無關。
+- **預算消耗順序**：同 class 內 records 按以下順序消耗預算：priority class（critical > standard > opportunistic）→ manifest 排序 key `(bundle.id, canonical SHA-256)` → bundle 內出現位置。同 class 嘅所有喺選拔中存活嘅 records 一齊排隊，唔分 bundle。
+- **`max_chars` 單位**：Unicode code points（Unicode scalar values）——唔係 UTF-8 bytes，唔係 UTF-16 code units。截斷同預算計量同用此單位（對 CJK 內容同 ASCII 有同一語意）。
 
 ### 1.2 刪除可證（tombstone + proof-of-reach）
 - tombstone = monotonic record：target id、timestamp、reason、衍生 artifact 清單（facts/edges/chunks/embedding-cache keys）。
 - Importers MUST tombstone-first（先刪後加），令 stale bundle 不能復活已刪內容。
 - **Load path 同樣 enforce**：`load()` 必先收集所有 input bundles 嘅 tombstones，任何被 target 嘅 record 唔會出現喺結果——stale bundle 喺 load 階段都唔可以復活已刪內容。`lifecycle: "deleted"` 嘅 records 同樣被 filter（`archived` 保留）。
 - **Tombstone dedupe**：同一 `target_id` 多個 tombstones → `deleted_at`/`reason` 取最新者，但 `derived_artifacts` 取**全部 copies 嘅 sorted UNION**（L3 證據唔可以因 merge 而縮水）。
+- **`deleted_at` 比較**：dedupe 嘅新舊判斷按 RFC3339 instant（timezone-aware datetime）比較，唔係字串比較——`2026-06-01T00:00:00+08:00` 晚於同刻嘅 `Z` 表示。無法 parse 嘅 `deleted_at` → `LoadValidationError`。
+- **Dedupe tie**：多個 tombstone `deleted_at` 相同時，canonical SHA-256 最大者勝（order-independent，同 manifest 排序嘅 content-digest tiebreak 原則一致）。
+- **Import 對 store 嘅刪除**：`import_bundle` 嘅 tombstone-first「先刪後加」涵蓋兩邊——store 既有 records 中任何被（store 或 incoming）tombstone 針對嘅 id 一併移除，incoming records 先加入。跨 root propagation 嘅正確性建喺呢個語意上。
 - 刪除等級 L1–L4：
   - L1 bundle 內刪除（本 bundle 再無該記錄）
   - L2 跨 bundle propagation（所有引用 bundle 均收 tombstone）
@@ -47,6 +52,7 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 ### 1.4 Canonicalization：只 normalize 結構，唔 normalize 值
 - Canonical form 保證：object keys 遞歸排序（UTF-8 code point byte order）、無多餘 whitespace、拒 NaN/Infinity。
 - **值原樣保留（verbatim）**：user strings——包括 RFC3339 timestamps 嘅 sub-second precision 同 UTC offset——一律唔改寫。Canonicalization 只 normalize **結構**；`json.loads(canonical_bytes(x)) == x` 對所有 conforming values 成立（parse-back equality，有測試）。Timestamp 改寫會摧毀事件次序資訊，屬 lossy，禁止。
+- **字串編碼**：canonical JSON 直接輸出 UTF-8 字元（`ensure_ascii=false` 語意），非 ASCII 字元唔做 `\uXXXX` escape。兩種編碼都係合法 JSON 但 digest 唔同——跨實作 digest 對帳（L2/L4）以本句為準。
 - Manifest 排序嘅 content-digest tiebreak 用呢個 canonical form 嘅 SHA-256。
 
 ### 1.5 Load-time validation（SC-SCHEMA）
@@ -57,7 +63,9 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 
 ### 1.6 Integrity digest（SC-INT）
 - `load()` 驗證每個 record 嘅 `integrity.digest`（SHA-256 of canonical body）；**digest 唔 match → 該 record 被 drop**（唔會原樣載入）。
-- `truncate_last` 截斷 body 之後：re-digest（digest 改為 truncated body 嘅 SHA-256）**兼 mark** `integrity.truncated = true`。冇剩餘預算（或 body 非 string）→ 成個 record drop。
+- `truncate_last` 截斷 body 之後：re-digest（digest 改為 truncated body 嘅 SHA-256）**兼 mark** `integrity.truncated = true`。冇剩餘預算（或 body 非 string）→ 成個 record drop。（「body 非 string」分支喺 §1.5 驗證後不可達，保留為防禦性語意：若未來 load path 放寬驗證，非 string body 嘅行為係 drop 唔係 reject。）
+- **截斷預算計量**：truncated record 消耗嘅係截斷後長度（即用晒該 class 剩餘預算）——預算計「收貨幾多」唔計「原本有幾多」，截斷後同 class 冇再有多 record 可以載入。
+- v0.1 digest-drop 為靜默；v0.2 起 `load()` 回傳值附 dropped-ids 通道（見 §3a）。
 
 ## 2. Conformance 等級（MBCP 層）
 
@@ -72,8 +80,24 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 
 - Scenarios versioned（`tests/scenarios/*.yaml`）；每個 scenario：input bundles → deterministic expected outcome。檔案係 YAML 1.2 嘅 JSON syntax 子集（JSON ⊂ YAML 1.2），令 runner 保持純 stdlib。
 - Runner（`tools/run_scenarios.py`）**只用 public API**（`mbcp.load` / `mbcp.import_bundle` / `mbcp.canonical_bytes`），無 white-box imports；對任何 conforming 實作可雙向重跑；輸出 per-implementation report（fail set + scenario IDs）。
+- **Scenario expect 比對語意**（每個欄位嘅 compare mode 喺 scenario 檔明文，唔接受隱式約定）：
+  - `record_ids`：精確有序比對（list equality）。
+  - `bodies`：按 id 對照；每個 id 嘅 body 精確相等。
+  - `digests_valid: true`：所有輸出 records 嘅 `integrity.digest` == SHA-256(canonical(輸出 body))（截斷 re-digest 後）。
+  - `truncated`：精確有序比對。
+  - `tombstones`：**只比對 scenario 檔明文 `compare:` 欄位清單入面嘅 keys**（例如 `compare: ["target_id","reason","derived_artifacts"]`）——未被列嘅 keys 唔比對。
+  - 未喺 expect 出現嘅欄位一律唔比對。
 - **Test-count guard**（`tools/test_count_guard.sh`）：count 全部測試 = `tests/test_*.py` 嘅 `def test_` 數目 + `tests/scenarios/*.yaml` 檔案數；任何 ref 之間數目下跌而無 spec 修訂 = CI fail。`--self-test` 用 `fixtures/deliberate_violation/` 整一個刪咗測試嘅 doctored tree，證明個 gate 真係會 fail（防假綠）。
 - 品質指標：雙模型 fail-set 重疊度（Kimi K3 生成 / GLM 獨立驗證）；重疊 = 盲區警報。
+
+### §3a 公開 API 契約（cross-implementation contract）
+
+跨實作契約只有三個函數；其餘（build-path helpers）唔屬契約，各實作自由。
+
+- `load(bundles) -> list[record]`：輸入 manifest dict list；回傳 record dict list——records verbatim（unknown fields 保留）、截斷已套用、順序 deterministic（§1.1）；結構錯 → `LoadValidationError`；merge 衝突 → `MergeConflict`；budget error → `BudgetExceeded`。
+- `import_bundle(store, bundle) -> {"records": [...], "tombstones": [...]}`：回傳**新**狀態 dict，唔 mutate `store` 或 `bundle`；store 係同結構 dict。
+- `canonical_bytes(value) -> bytes`；`canonical_sha256(value) -> str`（canonical bytes 之 SHA-256 hex，小寫）。
+- Scenario runner（`tools/run_scenarios.py` 同任何第三方 runner）只可以用呢三個函數對 inputs 做裁決；expect 比對語意見上節。
 
 ## 4. Importers（分銷 wedge，唔算 conformance 證據）
 
