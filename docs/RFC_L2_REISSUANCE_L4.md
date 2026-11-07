@@ -55,10 +55,11 @@ L4 = 「可交俾第三者驗證刪除已發生」。而家 L1 receipt 已經有
 2. **時鐘信任**：`deleted_at`/`issued_at` 係本地時鐘；第三方驗證只能信 monotonic journal 順序，唔能信絕對時間。建議 receipt 加 `journal_pos`（行號+digest chain），令驗證者可以重放 journal 對帳
 3. **無 L3 證明**：`derived_artifacts_verified: false` 永遠係 false 直至 L3 實現——L4 v1 明文 scope 排除 L3，唔冒認
 
-### 3.2 要拍板
+### 3.2 裁決（Isaac 2026-11-06）
 
-- **Q6 crypto 依賴**：SPEC 而家係純 stdlib（suite 可雙向重跑係賣點）。簽名需要 hashlib 之外嘅嘢（ed25519 等）。選項：(a) 純 stdlib `hmac` + 共享密鑰（弱，但零依賴）；(b) 引入最小依賴（如 `cryptography`），SPEC §0 註明 optional dependency；(c) L4 暫緩，先做 L2 + supersession，L4 留 M4。**建議 (c)**：L2/supersession 唔使 crypto，先把第三方可驗證性做到「無簽名但 digest-chain 完整」，簽名係 M4 獨立決定。
-- **Q7 L4 receipt 係咪新 schema**：若 M3 唔做 L4，呢條留空。
+- **Q6 crypto 依賴（已裁決）**：hmac 共享密鑰選項**剔走**——驗證方要有密鑰先驗到，即係佢自己都可以偽造，唔 viable 做第三方驗證。L4 將來只剩一條路：**minimal crypto dependency（ed25519，同 UMP 簽名方案對齊）**；M4 決定依賴時以此為前提。M3 唔做 L4。
+- **Q7 L4 schema**：M3 唔做，留 M4。
+- **G2 gate 衝突（已裁決：修訂）**：business case G2（2027-03-31）原文「刪除 L1–L4 可客觀判定」與 L4 移 M4 衝突。修訂為「**L2 + supersession 可客觀判定 + registry 首條記錄；L4 移 G3 前**」。修訂已記入 knowledge_base business case（controller requirement 權範圍，留記錄）。
 
 ## 4. M1 carried 兩條（同 load path 連住，M3 一併收）
 
@@ -69,7 +70,30 @@ L4 = 「可交俾第三者驗證刪除已發生」。而家 L1 receipt 已經有
 
 以上任何語意變更（lifecycle id-wide、supersession、L2 artifact）都係 SPEC 修訂：走 issue → proposal → ≥1 co-maintainer approve → suite 同步 → release。v0.1 尚未凍結，无 major bump 壓力，但 suite scenarios 必須同步加 case（DEL-05+ / INT-03+），唔准只改 code 唔改 suite。
 
-## 6. 第二獨立實作評估（策略主線）
+## 6. Canonical use case：就業過場（docs/USE_CASE_EMPLOYMENT_TRANSITION.md）
+
+呢份 use case 係本 RFC 嘅 acceptance scenario（Isaac 2026-11-06 指令）。四條 design questions 喺本 RFC 語意下嘅回答：
+
+**UC1 Partial handover（結構上防止未交付 profile 流入公司 agent）**
+提案：交付動作 = 個人 root 產生 **handover pack** artifact（`export_bundle(scope_filter)` 嘅產物），內含 (a) 交付 bundle 嘅 manifest digest、(b) 明文 scope 清單、(c) 個人 root 對呢個 pack 嘅 attestation（digest chain，簽名留 M4）。公司 root 嘅 import API **只接受帶 handover attestation 嘅 pack**——冇 attestation 嘅 bundle 喺 intake 就被拒，唔存在「靠 caller 記得剔 scope」。同時公司 root 記低 intake manifest（收咗邊啲 digest），成為日後 L2/L4 證明嘅範圍證據。*待拍板：attestation 喺 M3 用 digest chain（無簽名）係咪夠。*
+
+**UC2 Cross-bundle propagation（proof-of-reach）**
+離職流程：個人 root 對離職相關 ids 發刪除 → 產生 propagation pack（tombstone 集合）→ 交付公司 root → 公司 root `import`（重用 `import_bundle` tombstone-first）→ 公司 root 回發 **propagation ack**（已導入 tombstones 嘅 canonical digest）→ 個人 root 嘅 `propagation.jsonl` 記 pending→acked。L4 場景下：個人向公司出示嘅「刪除證明」= tombstone journal snapshot + propagation pack + 公司 root ack——三件嘢冇一樣需要信任對方聲稱，全部 digest 對帳。
+
+**UC3 Derived artifacts 邊界**
+記錄規則：任何由 records 衍生、且**參照 record id** 嘅工件（skills 引用、summaries、`emb:<id>` embedding cache keys）必須喺產生時登記入該 record 嘅 derived_artifacts——呢個係 runtime 側責任，MBCP 只提供 tombstone 欄位同 L3 驗證框架。場景裁決：`derived_artifacts_verified` 喺 L1/L2 收據永遠 false（M2 已定）；「公司 agent 學識嘅嘢」只有被登記為 derived artifact 先會入 L3 清除證明範圍。
+
+**UC4 Machine unlearning limitation（必須聲明）**
+吸收咗入 model weights 嘅 learned behavior唔喺 MBCP 機械證明能力內；receipt 只覆蓋有 manifest/記錄嘅 artifact。→ 本 RFC 採納為 L4 receipt `limitations` 必列項；**SPEC limitations 節（§1.2.1 之後）加一條對應聲明——待 Isaac 批措辭後 controller commit**（草稿：「L4 回執唔覆蓋 model weights 內嘅 learned behavior（machine unlearning 範圍）；已登記 derived artifacts 以外嘅隱式學習唔喺證明範圍」）。
+
+## 6a. 第二實作 spike 紀律（修訂）
+
+- **Spike writer 唔准讀 `mbcp/` / `importers/` / `tools/` source code**——只可以對住 `SPEC.md` + `tests/scenarios/*.yaml` + schema JSON 寫。目的係捉「SPEC 歧義」，唔係培訓「第二個抄作業嘅人」；讀咗 source 嘅 spike 無效，要重做。
+- Spike writer 建議 GLM family（同主 codebase worker 唔同家族，加多一層獨立性）。
+- Spike 放 `spike/` 目錄或獨立 worktree，**唔入主 codebase**、唔入 guard 計數；佢係 SPEC 驗證工具。
+- Spike 產出：per-scenario pass/fail + 歧義清單（SPEC 哪句唔夠明確令佢要估）——歧義清單係 spike 嘅第一交付物，pass rate 係第二。
+
+## 6b. 第二獨立實作評估（策略主線）
 
 GOVERNANCE 凍結條件：≥2 個獨立（非 project 自家）實作通過全部 suite scenarios。這係 badge 路線 critical path，比 L2/L4 功能更早做越好。
 
@@ -89,7 +113,7 @@ GOVERNANCE 凍結條件：≥2 個獨立（非 project 自家）實作通過全�
 4. Supersession（Q4/Q5 拍板後）
 5. L4（Q6 拍板後，可能 M4）
 
-## 8. Open questions 匯總（等 Isaac 批時逐條裁決）
+## 8. Open questions（全部已裁決 2026-11-06，Isaac RFC 審閱批准帶修訂）
 
 | # | 問題 | 建議 |
 |---|---|---|
