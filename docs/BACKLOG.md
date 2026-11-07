@@ -35,6 +35,13 @@
 3. **recover() error hygiene**：`mbcp/deletion.py:626-628` manifest `json.loads` 無 try/except，corrupt manifest 會炸 raw `JSONDecodeError` 而唔係 `DeletionError`（同 `_bundle_manifests` :241-249 唔一致；c33d806 已存在，非 round 3 引入）。
 4. **[carried from round 2] raw mbcp `build_bundle(tombstones=())`**：importer 面已 required，mbcp 核心層未——決定 mbcp 層係咪都要 required，定文檔寫明 asymmetry 係 importer-scope。
 
+## M3 precision verify（2026-11-07，verifier=GLM；040a0f2 + 3a17f53 PASS-WITH-ADVISORIES）
+1. **A-15 未實現**（controller brief 漏，非 worker 錯）：SPEC §1.2 已寫「unparseable `deleted_at` → LoadValidationError」但 `check_tombstone_on_load` 只查非空字串、`_parse_ts` 靜默 fallback 字串比較——load 接受垃圾 timestamp（controller 重現）。要裁決：實現 parse 驗證，或修訂 SPEC 句子；`_parse_ts` fallback 同步處理。→ M3 主體 round 0。
+2. **SPEC §3 補 `digests` compare mode**（controller 草案漏）：runner 已實現 per-id `digests: {id: hex}`（load-03 用緊），SPEC §3 compare-mode 清單冇佢——第三方實作讀 SPEC 唔會知 LOAD-03 比對語意。一行修訂。→ M3 主體 round 0。
+3. **A-01 unit-level pin**：raw-UTF8 只有 scenario pin（unit 全 ASCII 盲區，ensure_ascii=True 時 149 unit 全綠）。加一條 unit test（斷言 CJK canonical bytes 無 `\u` escape）。
+4. **Runner 硬化**：`_project` 對 missing compare key 會 KeyError 㷬成個 runner——應報 scenario fail 而唔係 crash。
+5. **compare list 可加 `deleted_at`**：三個 import scenarios 冇驗 merged `deleted_at`（tied copies 字串形態可能唔同，屬判斷位）；del-06 同字串形態個案可以加。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
