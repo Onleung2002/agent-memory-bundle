@@ -7,6 +7,8 @@ resurrect them.
 
 from datetime import datetime, timezone
 
+from .canonical import canonical_sha256
+
 
 def apply_tombstones(records, tombstones):
     """Return records minus any whose id is targeted by a tombstone."""
@@ -35,7 +37,10 @@ def _merge_tombstones(tombstones):
     The copy with the latest ``deleted_at`` wins for ``deleted_at`` and
     ``reason``, but ``derived_artifacts`` is the sorted UNION of every
     copy's list (SPEC 1.2): L3 proof-of-reach evidence must never shrink
-    through a merge.
+    through a merge. ``deleted_at`` is compared as an RFC3339 instant, and
+    copies tied on ``deleted_at`` are resolved by GREATEST canonical
+    SHA-256 of the tombstone (SPEC 1.2 dedupe tie), so the result is
+    fully order-independent.
     """
     by_target = {}
     for tomb in tombstones:
@@ -46,7 +51,10 @@ def _merge_tombstones(tombstones):
     merged = []
     for tid in sorted(by_target):
         entry = by_target[tid]
-        latest = max(entry["copies"], key=lambda t: _parse_ts(t["deleted_at"]))
+        latest = max(
+            entry["copies"],
+            key=lambda t: (_parse_ts(t["deleted_at"]), canonical_sha256(t)),
+        )
         merged.append({
             "target_id": tid,
             "deleted_at": latest["deleted_at"],

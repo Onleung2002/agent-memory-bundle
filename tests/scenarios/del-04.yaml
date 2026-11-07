@@ -46,6 +46,11 @@
           "emb:rec-t"
         ]
       }
+    ],
+    "compare": [
+      "target_id",
+      "reason",
+      "derived_artifacts"
     ]
   }
 }

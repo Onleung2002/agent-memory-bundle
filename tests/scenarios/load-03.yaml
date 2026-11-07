@@ -1,0 +1,62 @@
+{
+  "id": "LOAD-03",
+  "spec_version": "0.1",
+  "title": "non-ASCII (Cantonese) body loads and its digest is sha256 over raw-UTF8 canonical bytes, no escape",
+  "comment": "A-01 / SPEC 1.4 — canonical JSON emits UTF-8 characters verbatim (ensure_ascii=false semantics), never \\uXXXX escapes, so the content digest is sha256 over the raw-UTF8 canonical bytes of the body string. Runner support — the explicit per-id 'digests' expect field checks integrity.digest against the literal hex below (computed as sha256(canonical_bytes(body))); 'digests_valid' alone would only check self-consistency.",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-load-03"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-canto",
+            "kind": "fact",
+            "body": "使用者喺2026年11月轉職，需要交接記憶 bundle",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "c3d940b8bf7ed9ba49f8db3b49efab3cc7be1f894167e5d01816121ddeb235f9"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-canto"
+    ],
+    "bodies": {
+      "rec-canto": "使用者喺2026年11月轉職，需要交接記憶 bundle"
+    },
+    "digests_valid": true,
+    "digests": {
+      "rec-canto": "c3d940b8bf7ed9ba49f8db3b49efab3cc7be1f894167e5d01816121ddeb235f9"
+    }
+  }
+}

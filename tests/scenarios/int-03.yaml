@@ -1,0 +1,86 @@
+{
+  "id": "INT-03",
+  "spec_version": "0.1",
+  "title": "a record with a non-string body is dropped silently on load; remaining records load",
+  "comment": "A-07 / SPEC 1.6 (layered resolution) — the build path rejects a non-string body via validation (SPEC 1.5), but the load path is a tolerant reader — such a record is DROPPED silently, no exception, and never reaches budget accounting. The dropped-ids report channel is deferred to v0.2 (SPEC 3a) and is deliberately not exercised here. rec-num carries a VALID digest over its numeric body so the scenario isolates the body-type drop from the digest-mismatch drop (INT-01).",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-int-03"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-num",
+            "kind": "fact",
+            "body": 42,
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-text",
+            "kind": "fact",
+            "body": "plain text body that must load",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "30dc693a69a01baeb90e4eb9a7bf3d449c6b06bd641b624fb2a2472fd3b14d52"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-text"
+    ],
+    "digests_valid": true
+  }
+}

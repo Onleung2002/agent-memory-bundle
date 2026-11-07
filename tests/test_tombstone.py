@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mbcp import apply_tombstones, build_bundle, import_bundle, make_tombstone
+from mbcp import apply_tombstones, build_bundle, canonical_sha256, import_bundle, make_tombstone
 
 from syn import FIXED_TS, syn_record
 
@@ -91,3 +91,41 @@ def test_sc_del_04_tombstone_merge_unions_derived_artifacts():
     winner = merged["tombstones"][0]
     assert winner["reason"] == "second"  # latest deleted_at wins
     assert sorted(winner["derived_artifacts"]) == ["chunk:rec-t:0", "emb:rec-t"]
+
+
+def test_tombstone_dedupe_equal_deleted_at_tiebreaks_on_canonical_sha256():
+    # A-16 (SPEC 1.2): copies with EQUAL deleted_at resolve by GREATEST
+    # canonical SHA-256 of the tombstone — fully order-independent.
+    copy_alpha = make_tombstone(
+        "rec-tie", "copy-alpha",
+        deleted_at="2026-06-01T00:00:00Z",
+        derived_artifacts=["chunk:rec-tie:0"],
+    )
+    copy_beta = make_tombstone(
+        "rec-tie", "copy-beta",
+        deleted_at="2026-06-01T00:00:00Z",
+        derived_artifacts=["emb:rec-tie"],
+    )
+    digests = {
+        "copy-alpha": canonical_sha256(copy_alpha),
+        "copy-beta": canonical_sha256(copy_beta),
+    }
+    expected_reason = max(digests, key=digests.get)
+
+    merged_outputs = []
+    for copies in ([copy_alpha, copy_beta], [copy_beta, copy_alpha]):
+        merged = import_bundle(
+            {"records": [], "tombstones": list(copies)},
+            {"records": [], "tombstones": []},
+        )
+        assert len(merged["tombstones"]) == 1
+        winner = merged["tombstones"][0]
+        assert winner["reason"] == expected_reason  # digest-greater wins
+        assert sorted(winner["derived_artifacts"]) == [
+            "chunk:rec-tie:0",
+            "emb:rec-tie",
+        ]  # union, never shrunk
+        merged_outputs.append(merged)
+
+    # identical merged output under BOTH input orders
+    assert merged_outputs[0] == merged_outputs[1]

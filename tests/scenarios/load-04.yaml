@@ -1,0 +1,92 @@
+{
+  "id": "LOAD-04",
+  "spec_version": "0.1",
+  "title": "truncate_last consumes the whole remaining class budget — the record after a truncated one cannot load",
+  "comment": "A-03 / SPEC 1.6 — a truncated record consumes budget equal to its truncated length (the entire remaining class budget), counted as delivered, not as original. Class budget here is min(max_chars)=10; record A (16 chars) truncates to 10 and exhausts the class, so record B must NOT load.",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-load-04"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-a",
+            "kind": "fact",
+            "body": "0123456789ABCDEF",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "f706c3ee64850bddd5462f62dceea5592270719edecda909906b678f3aa31501"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 10,
+                "on_budget_exceed": "truncate_last",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-b",
+            "kind": "fact",
+            "body": "tail-record",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "0c679ed279b1d5808aa8b38aca4b2b3318d5b510e9104a8b11c7a88193735862"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 10,
+                "on_budget_exceed": "truncate_last",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-a"
+    ],
+    "bodies": {
+      "rec-a": "0123456789"
+    },
+    "digests_valid": true,
+    "truncated": [
+      "rec-a"
+    ]
+  }
+}
