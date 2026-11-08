@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mbcp import LoadValidationError, load, make_tombstone
+from mbcp import LoadValidationError, build_bundle, load, make_tombstone, validate_bundle
 
 from syn import assert_raises, syn_record
 
@@ -56,6 +56,47 @@ def test_sc_schema_01_malformed_manifest_raises_validation_error():
         [{"bundle": {"id": "b"}, "records": {"not": "a list"}, "tombstones": []}],
     )
     assert_raises(LoadValidationError, load, ["not a manifest"])
+
+
+def test_build_bundle_emits_all_four_manifest_keys():
+    # SPEC 1.5 build-path manifest: bundle, mbcp_version, records,
+    # tombstones — emitted even when both lists are empty.
+    manifest = build_bundle("bundle-keys")
+    assert set(manifest) == {"bundle", "mbcp_version", "records", "tombstones"}
+    assert manifest["records"] == []
+    assert manifest["tombstones"] == []
+    validate_bundle(manifest)  # build path accepts its own output
+
+
+def test_build_path_requires_records_and_tombstones_keys():
+    # SPEC 1.5: missing key is a build-path error (strict schema).
+    # _schema.ValidationError is a ValueError; assert the shared base.
+    manifest = _raw_bundle()
+    del manifest["records"]
+    assert_raises(ValueError, validate_bundle, manifest)
+    manifest = _raw_bundle()
+    del manifest["tombstones"]
+    assert_raises(ValueError, validate_bundle, manifest)
+    manifest = _raw_bundle()
+    del manifest["records"]
+    del manifest["tombstones"]
+    assert_raises(ValueError, validate_bundle, manifest)
+
+
+def test_load_path_tolerates_missing_records_and_tombstones_keys():
+    # SPEC 1.5 asymmetry, load side: missing keys are treated as empty
+    # lists — tolerant reader, NO error.
+    record = syn_record("rec-tol", "body")
+    manifest = _raw_bundle(records=[record])
+    del manifest["tombstones"]
+    assert [r["id"] for r in load([manifest])] == ["rec-tol"]
+    manifest = _raw_bundle()
+    del manifest["records"]
+    assert load([manifest]) == []
+    manifest = _raw_bundle()
+    del manifest["records"]
+    del manifest["tombstones"]
+    assert load([manifest]) == []
 
 
 def _raw_tombstone(**overrides):

@@ -1,0 +1,199 @@
+{
+  "id": "LOAD-05",
+  "spec_version": "0.1",
+  "title": "lifecycle='deleted' is an id-wide deletion signal: an active copy of the id in another bundle cannot load (SPEC 1.2 precision pass)",
+  "comment": "M3 round 1 / SPEC 1.2: any record with lifecycle=\"deleted\" in ANY input bundle deletes the id across ALL bundles, same as a tombstone. Bundle A and C hold active copies of rec-x; bundle B carries a lifecycle=deleted copy. All three copies drop; only rec-y and rec-z load. archived lifecycle is unaffected (unit tests).",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-load-05-a"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-x",
+            "kind": "fact",
+            "body": "synthetic body load05 active copy x",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "6d66ef97d43a692d3b900dcdc959c31110b26a48371f14a900e1086fcc53a48e"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-y",
+            "kind": "fact",
+            "body": "synthetic body load05 survivor y",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "f5f0595d51e598f6e591d7844b280644e3dd89e77a2e81adbb328ed60624ec5c"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "sc-load-05-b"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-x",
+            "kind": "fact",
+            "body": "synthetic body load05 deleted copy x",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "deleted",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "59b266844a56026b5cff11469e543ab13694ddf471ab0017bc06ffdbd87477ba"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "sc-load-05-c"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-x",
+            "kind": "fact",
+            "body": "synthetic body load05 active copy x",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "6d66ef97d43a692d3b900dcdc959c31110b26a48371f14a900e1086fcc53a48e"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-z",
+            "kind": "fact",
+            "body": "synthetic body load05 survivor z",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "19947a5cd1858159837f2d5d5d83a46ae471652bef97b587dbade998881e3109"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-y",
+      "rec-z"
+    ],
+    "digests_valid": true,
+    "digests": {
+      "rec-y": "f5f0595d51e598f6e591d7844b280644e3dd89e77a2e81adbb328ed60624ec5c",
+      "rec-z": "19947a5cd1858159837f2d5d5d83a46ae471652bef97b587dbade998881e3109"
+    }
+  }
+}
