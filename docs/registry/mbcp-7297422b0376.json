@@ -1,0 +1,33 @@
+{
+  "attestation": {
+    "evidence_ref": "docs/AUDIT_2026-11-08.md + docs/MILESTONE_M3.md §5a",
+    "kind": "verifier-attested",
+    "method": "independent adversarial audit + mutation-verified verification rounds, replayed against tools/run_tests.py and tools/run_scenarios.py",
+    "verifier": "GLM independent verification session"
+  },
+  "external_benchmark": [],
+  "implementation": {
+    "name": "mbcp",
+    "producer": "home",
+    "repo_url": "https://github.com/Onleung2002/agent-memory-bundle",
+    "version": "0.1.0"
+  },
+  "limitations": [
+    "digest-chain integrity only; third-party-verifiable attestation arrives with L4 signing (roadmap); this record is a Conformance Report, not a legal opinion"
+  ],
+  "notes": "First registry record: the home reference implementation after the M3 hotfix round (audit HIGH#1/HIGH#2 fixed, ATK1-3 pinned, A-5 parse-gate pins), GLM-verified.",
+  "spec": {
+    "record_generated_at": "2026-11-08T14:53:56Z",
+    "spec_commit": "7297422b03760494511df29d949bbc3e37cbc203",
+    "spec_version": "0.1"
+  },
+  "suite": {
+    "fail_set": [],
+    "inventory_tool": "python3 tools/test_inventory.py",
+    "runner": "tools/run_scenarios.py",
+    "scenarios_passed": 19,
+    "scenarios_total": 19,
+    "unit_passed": 224,
+    "unit_total": 224
+  }
+}
