@@ -19,8 +19,14 @@ def apply_tombstones(records, tombstones):
 def _parse_ts(value):
     """Parse an RFC3339 timestamp for chronological comparison.
 
-    Falls back to the raw string (lexicographic order) for unparseable
-    values so comparison stays total and deterministic.
+    The string-fallback branch (lexicographic order on the raw value) is
+    DEFENSIVE-ONLY: load-path validation (check_tombstone_on_load, A-15)
+    and build-path validation (validate_tombstone) guarantee that every
+    ``deleted_at`` reaching this point already parsed as an RFC3339
+    timestamp with timezone info. The fallback exists solely to keep the
+    comparison total and deterministic if an unvalidated caller ever
+    reaches this code — same defensive-only pattern as the non-string-body
+    note in SPEC 1.6.
     """
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))

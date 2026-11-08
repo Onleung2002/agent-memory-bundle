@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mbcp import LoadValidationError, load
+from mbcp import LoadValidationError, load, make_tombstone
 
 from syn import assert_raises, syn_record
 
@@ -56,3 +56,56 @@ def test_sc_schema_01_malformed_manifest_raises_validation_error():
         [{"bundle": {"id": "b"}, "records": {"not": "a list"}, "tombstones": []}],
     )
     assert_raises(LoadValidationError, load, ["not a manifest"])
+
+
+def _raw_tombstone(**overrides):
+    tombstone = {
+        "target_id": "rec-x",
+        "deleted_at": "2026-06-01T00:00:00Z",
+        "reason": "erased",
+        "derived_artifacts": [],
+    }
+    tombstone.update(overrides)
+    return tombstone
+
+
+def test_sc_schema_01_tombstone_unparseable_deleted_at_raises():
+    # A-15 (SPEC 1.2): deleted_at must parse as RFC3339 with timezone info
+    tombstone = _raw_tombstone(deleted_at="not-a-timestamp")
+    assert_raises(LoadValidationError, load, [_raw_bundle(tombstones=[tombstone])])
+
+
+def test_sc_schema_01_tombstone_naive_deleted_at_raises():
+    # A-15 (SPEC 1.2): a timestamp WITHOUT a timezone offset is rejected
+    tombstone = _raw_tombstone(deleted_at="2026-06-01T00:00:00")
+    assert_raises(LoadValidationError, load, [_raw_bundle(tombstones=[tombstone])])
+
+
+def test_sc_schema_01_tombstone_valid_offset_timestamps_pass():
+    for ts in (
+        "2026-06-01T00:00:00Z",
+        "2026-06-01T08:00:00+08:00",
+        "2026-06-01T10:20:30.5-05:30",
+    ):
+        tombstone = _raw_tombstone(deleted_at=ts)
+        assert load([_raw_bundle(tombstones=[tombstone])]) == []
+
+
+def test_sc_schema_01_build_path_rejects_bad_deleted_at():
+    # A-15: the build path rejects naive/unparseable deleted_at too. The
+    # schema's own format=date-time check fires first (ValidationError, a
+    # ValueError); assert the shared ValueError base.
+    assert_raises(
+        ValueError, make_tombstone, "rec-x", "erased",
+        deleted_at="not-a-timestamp",
+    )
+    assert_raises(
+        ValueError, make_tombstone, "rec-x", "erased",
+        deleted_at="2026-06-01T00:00:00",
+    )
+
+
+def test_sc_schema_01_build_path_accepts_offset_timestamps():
+    for ts in ("2026-06-01T00:00:00Z", "2026-06-01T08:00:00+08:00"):
+        tombstone = make_tombstone("rec-x", "erased", deleted_at=ts)
+        assert tombstone["deleted_at"] == ts

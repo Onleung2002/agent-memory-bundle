@@ -42,6 +42,10 @@
 4. **Runner 硬化**：`_project` 對 missing compare key 會 KeyError 㷬成個 runner——應報 scenario fail 而唔係 crash。
 5. **compare list 可加 `deleted_at`**：三個 import scenarios 冇驗 merged `deleted_at`（tied copies 字串形態可能唔同，屬判斷位）；del-06 同字串形態個案可以加。
 
+## M3 round 0 verify（2026-11-08，verifier=GLM；8348817 + fdd5312 PASS）
+1. **[LOW] load/build `deleted_at` grammar 不對稱**：load path 用裸 `fromisoformat`（接受 space-separator/basic-format，拒 RFC3339-legal 小寫 t/z），build path 用 schema regex（較嚴）。統一兩邊 grammar 或修 SPEC §1.2 句子。
+2. **[INFO] `validate_tombstone` 內 `_check_deleted_at_rfc3339` 係 dead layer**（schema `format: date-time` 更嚴、先 fired）——加 layering 註解免日後 dead-code drift。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。

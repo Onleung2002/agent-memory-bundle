@@ -4,6 +4,7 @@ import copy
 import hashlib
 import re
 from collections import defaultdict
+from datetime import datetime
 
 from . import _schema
 from .canonical import canonical_bytes, canonical_sha256, utc_now
@@ -91,6 +92,7 @@ def validate_record(record):
 
 def validate_tombstone(tombstone):
     _schema.validate(tombstone, _tombstone_schema())
+    _check_deleted_at_rfc3339(tombstone["deleted_at"], "$.tombstones[].deleted_at")
     return tombstone
 
 
@@ -224,6 +226,29 @@ def _check_dict(obj, key, path, *, required=True):
     return value
 
 
+def _check_deleted_at_rfc3339(value, path):
+    """A-15 (SPEC 1.2): ``deleted_at`` must parse as RFC3339 WITH timezone
+    info — ``Z`` or a numeric ``±HH:MM`` offset. Naive timestamps (no
+    offset) and unparseable strings are rejected. Shared by the build path
+    (validate_tombstone) and the load path (check_tombstone_on_load).
+    """
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        raise _err(
+            path,
+            "deleted_at must be a parseable RFC3339 timestamp "
+            "(e.g. '2026-06-01T00:00:00Z')",
+        )
+    if parsed.tzinfo is None:
+        raise _err(
+            path,
+            "deleted_at must carry timezone info ('Z' or a numeric offset); "
+            "naive timestamps are rejected",
+        )
+    return value
+
+
 def check_record_on_load(record, path="$.records[]"):
     """Structurally validate a record for load; raise LoadValidationError.
 
@@ -301,6 +326,7 @@ def check_tombstone_on_load(tombstone, path="$.tombstones[]"):
     _check(isinstance(tombstone, dict), path, "expected object")
     _check_str(tombstone, "target_id", path, min_len=1)
     _check_str(tombstone, "deleted_at", path, min_len=1)
+    _check_deleted_at_rfc3339(tombstone["deleted_at"], f"{path}.deleted_at")
     _check_str(tombstone, "reason", path)
     artifacts = tombstone.get("derived_artifacts")
     _check(

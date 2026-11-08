@@ -114,14 +114,22 @@ def _check_import(scenario, expect):
                 "tombstones: scenario must declare an explicit compare key list"
             )
         else:
-            def _project(t):
-                proj = {k: t[k] for k in compare}
+            def _project(t, side):
+                proj = {}
+                for k in compare:
+                    if k not in t:
+                        failures.append(
+                            f"tombstones: {side} tombstone missing "
+                            f"compare key {k!r}"
+                        )
+                        continue
+                    proj[k] = t[k]
                 if "derived_artifacts" in proj:
                     proj["derived_artifacts"] = sorted(proj["derived_artifacts"])
                 return proj
 
-            got = [_project(t) for t in merged["tombstones"]]
-            want = [_project(e) for e in expect["tombstones"]]
+            got = [_project(t, "got") for t in merged["tombstones"]]
+            want = [_project(e, "expected") for e in expect["tombstones"]]
             if got != want:
                 failures.append(f"tombstones: want {want}, got {got}")
     return failures
