@@ -1,5 +1,14 @@
 # agent-memory-bundle — MBCP
 
+> **English.** MBCP (Memory Bundle Conformance Profile) is a neutral, UMP-compatible conformance profile for agent memory: a machine-checkable spec, an executable test suite, and deletion-evidence tooling. We don't build memory formats or agent runtimes — we build the examiner.
+>
+> **Try it:** pure Python 3.11+ stdlib, zero dependencies:
+> ```bash
+> python3 tools/run_tests.py        # 194 unit tests
+> python3 tools/run_scenarios.py    # 18 conformance scenarios
+> ```
+> What makes it different: **provable deletion** (tombstone-first semantics, crash-safe receipts, cross-root propagation — GDPR Art.17-grade evidence, not a tombstone flag), **deterministic cross-bundle load** (budgeted, order-independent, digest-tie-broken), and a **suite that is itself the product** (rerunnable against any conforming implementation). Honest limits up front: artifacts are digest-chain-integrity only until L4 signing — see [SECURITY.md](SECURITY.md).
+
 > **MBCP = Memory Bundle Conformance Profile** — 一個 UMP-compatible 嘅中立 conformance profile + 可執行測試套件 + 刪除可證（GDPR Art.17）evidence tooling + importers。
 > 我哋唔造記憶格式，唔造 agent runtime——我哋做**考官**。
 
