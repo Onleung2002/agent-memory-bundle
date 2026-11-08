@@ -22,10 +22,15 @@ pack. That proof waits for ed25519 signatures (M4, RFC §3.2 Q6).
 
 Failure semantics (Q3): propagation is best-effort. The append-only
 ``propagation.jsonl`` journal records every intake attempt as
-``pending``/``acked``; fsynced before the call returns. Fail-closed, per
-the tombstone-first philosophy: an unacked propagation is NOT evidence of
-propagation, and ``verify_receipt`` never consults propagation state, so a
-pending (or forged-acked) line can never launder a receipt into ok:True.
+``pending``/``acked``; fsynced before the call returns. This is an
+**attempts audit**, NOT a deduped state log: every successful intake —
+including an idempotent no-op re-import that applied nothing — appends
+exactly one ``acked`` line, so the line count grows by one per import
+(BACKLOG M3 round-2 advisory 1, pinned; do not "fix" the growth without
+a deliberate design change). Fail-closed, per the tombstone-first
+philosophy: an unacked propagation is NOT evidence of propagation, and
+``verify_receipt`` never consults propagation state, so a pending (or
+forged-acked) line can never launder a receipt into ok:True.
 
 Layout of a service root using propagation (in addition to the L1 layout)::
 
@@ -238,12 +243,17 @@ def import_propagation_pack(root, pack, *, now=None):
     service.recover()
 
     # 3. ack artifact (idempotent: an ack already on disk for a no-op
-    #    re-import is returned unchanged).
+    #    re-import is returned unchanged — but ONLY after its integrity is
+    #    re-checked on read-back: a corrupt artifact raises a typed error
+    #    and a tampered one is re-issued from state, never returned).
     acks_dir = service.root / "propagation" / "acks"
     ack_path = acks_dir / f"{pack_digest[:16]}.json"
+    ack = None
     if not imported and ack_path.exists():
-        ack = json.loads(ack_path.read_text(encoding="utf-8"))
-    else:
+        ack = _read_ack(ack_path)
+        if ack["integrity"]["digest"] != canonical_sha256(ack["ack"]):
+            ack = None  # tampered: re-issue from state below
+    if ack is None:
         imported_digests = sorted(
             {canonical_sha256(t) for t in body["tombstones"]}
         )
@@ -263,6 +273,8 @@ def import_propagation_pack(root, pack, *, now=None):
 
     # 4. pending->acked journal, fsynced before returning (fail-closed:
     #    the line claims "acked" only after the ack artifact is durable).
+    #    Attempts audit: one acked line per intake attempt, INCLUDING
+    #    no-op re-imports (BACKLOG M3 round-2 advisory 1).
     entry = {
         "pack_digest": pack_digest,
         "source_root": source_root,
@@ -294,24 +306,52 @@ def record_pending_propagation(root, *, pack_digest, source_root, now=None):
     return entry
 
 
+def _read_ack(path):
+    """Read an ack artifact back from disk (no-op re-import path).
+
+    BACKLOG M3 round-2 advisory 3: the read-back must not return garbage.
+    A corrupt artifact (unparseable or schema-invalid) raises the typed
+    :class:`PropagationError` naming the path; a TAMPERED one (valid shape
+    but integrity digest mismatch) is the caller's job to detect — this
+    helper only guarantees a structurally sound artifact comes back.
+    """
+    try:
+        ack = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as err:
+        raise PropagationError(f"corrupt ack artifact {path}: {err}") from err
+    try:
+        _schema.validate(ack, _ack_schema())
+    except _schema.ValidationError as err:
+        raise PropagationError(f"corrupt ack artifact {path}: {err}") from err
+    return ack
+
+
 def read_propagation_journal(root):
     """All ``propagation.jsonl`` lines, in write order.
 
     Corrupt lines raise :class:`PropagationJournalError` naming the line
     (A-15 hygiene: a loud typed error, never a bare JSONDecodeError).
+    Decode hygiene (M3 round-2 verify advisory 2): the journal is read as
+    bytes and each line decoded explicitly — invalid UTF-8 raises the
+    typed error with path:lineno, never a bare UnicodeDecodeError (the L1
+    ``journal_tombstones`` reader shares this pattern).
     """
     path = _as_service(root).root / "propagation.jsonl"
     if not path.exists():
         return []
     entries = []
     required = {"pack_digest", "source_root", "status", "ack_digest", "at"}
-    for lineno, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), 1
-    ):
+    for lineno, line in enumerate(path.read_bytes().splitlines(), 1):
         if not line.strip():
             continue
         try:
-            entry = json.loads(line)
+            text = line.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise PropagationJournalError(
+                f"corrupt propagation journal {path}:{lineno}: invalid UTF-8: {err}"
+            ) from err
+        try:
+            entry = json.loads(text)
         except json.JSONDecodeError as err:
             raise PropagationJournalError(
                 f"corrupt propagation journal {path}:{lineno}: {err}"

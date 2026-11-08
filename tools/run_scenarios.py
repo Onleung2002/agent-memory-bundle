@@ -46,6 +46,28 @@ YAML 1.2), so the runner stays pure-stdlib. Format:
       }
     }
 
+    {
+      "id": "DEL-07",
+      "title": "receipt supersession: under-report retry re-issues a chain tail",
+      "op": "supersede",
+      "input": {
+        "bundles": [...],       # manifests put_bundle'd into a fresh root
+        "delete": {"bundle_id": "...", "target_id": "...", "reason": "..."},
+        "resurrect": [...]      # manifests put AFTER the delete (novel
+                                # digest), then recover() grows the log
+      },
+      "expect": {
+        "first_receipt_ok": false,      # original receipt under-reports
+        "tail_ok": true,                # re-issued chain tail verifies ok
+        "old_receipt_ok": false,        # superseded receipt stays ok:false
+        "final_receipt_count": 2        # no-growth retries add nothing
+      }
+    }
+
+The supersede op builds one real service root in a temp dir with a fixed
+clock, runs the supersession story delete -> resurrect -> recover ->
+retry through the public API, and checks the chain semantics end to end.
+
 The propagate op builds two real service roots in a temp dir (a pure-data
 scenario cannot express two roots), runs the deletes on the source, exports
 a propagation pack, imports it into the destination, then re-reads the
@@ -232,6 +254,77 @@ def _check_propagate(scenario, expect):
     return failures
 
 
+def _check_supersede(scenario, expect):
+    """Receipt supersession story (SPEC 1.2.2): delete -> recovery growth
+    makes the first receipt under-report -> delete() retry re-issues a
+    superseding chain-tail receipt covering every known removal, and the
+    superseded receipt stays ok:false forever.
+
+    One real service root in a temp dir with a fixed clock, public API
+    only — a pure-data scenario cannot express recovery-driven growth.
+    """
+    failures = []
+    fixed_now = "2026-11-06T00:00:00Z"
+    inp = scenario["input"]
+    deletion = inp["delete"]
+    args = (deletion["bundle_id"], deletion["target_id"], deletion["reason"])
+    with tempfile.TemporaryDirectory() as tmp:
+        service = L1DeletionService(
+            Path(tmp) / "root", clock=lambda: fixed_now
+        )
+        for manifest in inp.get("bundles", []):
+            service.put_bundle(manifest)
+        first = service.delete(*args)
+        for manifest in inp.get("resurrect", []):
+            service.put_bundle(manifest)
+        if inp.get("recover"):
+            service.recover()
+
+        if "first_receipt_ok" in expect:
+            check = service.verify_receipt(first)
+            if check["ok"] != expect["first_receipt_ok"]:
+                failures.append(
+                    f"first receipt ok={check['ok']}, want "
+                    f"{expect['first_receipt_ok']}: {check['problems']}"
+                )
+
+        retried = service.delete(*args)
+        if expect.get("supersedes"):
+            link = retried["receipt"].get("supersedes")
+            if link != first["integrity"]["digest"]:
+                failures.append(
+                    f"re-issued receipt supersedes {link!r}, want "
+                    f"{first['integrity']['digest']!r}"
+                )
+        if "tail_ok" in expect:
+            check = service.verify_receipt(retried)
+            if check["ok"] != expect["tail_ok"]:
+                failures.append(
+                    f"chain tail ok={check['ok']}, want "
+                    f"{expect['tail_ok']}: {check['problems']}"
+                )
+        if "old_receipt_ok" in expect:
+            check = service.verify_receipt(first)
+            if check["ok"] != expect["old_receipt_ok"]:
+                failures.append(
+                    f"superseded receipt ok={check['ok']}, want "
+                    f"{expect['old_receipt_ok']} (whitewash)"
+                )
+
+        # a no-growth retry must return the chain tail and write nothing
+        again = service.delete(*args)
+        if "final_receipt_count" in expect:
+            count = len(service.receipt_paths())
+            if count != expect["final_receipt_count"]:
+                failures.append(
+                    f"receipt count {count}, want "
+                    f"{expect['final_receipt_count']}"
+                )
+        if again != retried:
+            failures.append("no-growth retry returned a different receipt")
+    return failures
+
+
 def main():
     files = sorted(SCENARIO_DIR.glob("*.yaml"))
     if not files:
@@ -244,6 +337,7 @@ def main():
         checker = {
             "import": _check_import,
             "propagate": _check_propagate,
+            "supersede": _check_supersede,
         }.get(op, _check_load)
         failures = checker(scenario, scenario.get("expect", {}))
         if failures:

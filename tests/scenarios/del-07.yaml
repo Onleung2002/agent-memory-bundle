@@ -1,0 +1,133 @@
+{
+  "id": "DEL-07",
+  "spec_version": "0.1",
+  "title": "receipt supersession: recovery growth heals by re-issue, never by rewriting",
+  "op": "supersede",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-del07-main"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-001",
+            "kind": "fact",
+            "body": "synthetic scenario one",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "012eab918409056c190aa14ecb607d3f947f6b3171e0b3f59378222ca44b5e62"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-002",
+            "kind": "fact",
+            "body": "synthetic scenario two",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "f101f183a37751410760194bfcb8d4d6a2f8d48c722a1904c09b3962ae381c73"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ],
+    "delete": {
+      "bundle_id": "sc-del07-main",
+      "target_id": "rec-002",
+      "reason": "synthetic erasure supersession scenario"
+    },
+    "resurrect": [
+      {
+        "bundle": {
+          "id": "sc-del07-stale"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-002",
+            "kind": "fact",
+            "body": "synthetic scenario two STALE variant",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "eb4be70245832d78f09d338f7412f3eb075921160c197cb6f2401e6119d25fd8"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ],
+    "recover": true
+  },
+  "expect": {
+    "first_receipt_ok": false,
+    "supersedes": true,
+    "tail_ok": true,
+    "old_receipt_ok": false,
+    "final_receipt_count": 2
+  }
+}
