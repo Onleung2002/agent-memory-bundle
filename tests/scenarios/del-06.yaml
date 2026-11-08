@@ -44,11 +44,13 @@
         "derived_artifacts": [
           "chunk:rec-tie:0",
           "emb:rec-tie"
-        ]
+        ],
+        "deleted_at": "2026-06-01T00:00:00Z"
       }
     ],
     "compare": [
       "target_id",
+      "deleted_at",
       "reason",
       "derived_artifacts"
     ]
