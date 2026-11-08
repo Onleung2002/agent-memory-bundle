@@ -76,6 +76,12 @@
 6. **[M4 Round C 待裁決]**：§3 lock/CAS、§5 L2 authorization+receipt、§6 put_bundle journal enforcement、§7/§15 ack identity+pending、§8 budget floor、§9 duplicate winner 語意、§10 id-wide 刪除通道定性、§12 record id grammar+NFC、§13 bundle inventory、§14 numeric serialization——每條帶 audit 建議修法，見 AUDIT_2026-11-08.md。
 7. **[程序] Audit 揭 M3 round-3 BACKLOG #1「無 laundering」判斷錯**（controller 當時 repro digest 相同 mask 咗問題）——該條已由今輪 HIGH#1 修復取代；記錄跟事實。
 
+## M4 Round A verify（2026-11-08，registry；49a44fb+8c522a0 PASS-WITH-ADVISORIES）
+1. **[registry v0.2 / Round C 分流] ADV-2 外部 record 驗證設計**：unresolvable spec_commit → schema-only（偽造數字過 pin）；更惡——偽造者可 cite 本 repo 真 commit 頂替。修法：`producer: external` 必須帶 fetchable `repo_url` + commit resolution 檢查（或明示 `count-verified: false`），並拒絕 cite 本 repo commit 嘅 external record。v0.1 可接受（registry 得一條 home record，PR review 層把關）。
+2. **[已 pin] ADV-1**：`record_generated_at` 對 spec_commit git committer date（reg_06）；**[已 pin] ADV-3**：術語法 grep pin（reg_07——dual needle：`certificat-` 同 `certified`，後者唔包前者 root，M3 mutation 首跑揭 pin 自身漏「certified」）；**[已 pin] ADV-4**：所有 schemas `additionalProperties:false` meta-pin（reg_08）。三 mutation 重跑全紅。
+3. **[已修] ADV-5**：REGISTRY.md「quoted verbatim」→「authorized English rendering」。
+4. **[裁定記錄]**：worker reject controller 嘅 HEAD-coupling anti-drift 設計，GLM verifier ENDORSED（HEAD-coupled check 係 self-reference 死代碼；commit-coupled 令歷史記錄永遠可驗）——brief 設計錯、worker 修正對。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
