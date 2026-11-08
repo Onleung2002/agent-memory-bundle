@@ -37,6 +37,10 @@ Controller commits：`35c99a8`(ambiguity inventory)、各 BACKLOG advisory commi
 4. L4 簽名（ed25519，Q6）：三層 digest 信任模型升級為可對外驗證。
 5. 精確化驗證殘餘：round-1 archived-wording test 已 pin；M3 精確化 round 的 LOW advisories 已收編。
 
+## 5a. 封存後 hotfix 輪（2026-11-08，M4 前置；詳見 docs/AUDIT_2026-11-08.md）
+
+獨立 adversarial audit（deepseek，450 行，public repo 上首個外部審查）揭 HIGH×2 + MEDIUM×13。控制器唔照單全收：親手重現 HIGH#1/#2 後收貨、推翻本 milestone §5 嗰句「無 laundering」自評（audit 用不同 digest 打穿——repro digest 相同 mask 咗 accounting 縮水）。修復：HIGH#1 target-wide accounting、HIGH#2 self-verify、§4 id grammar、§11 wedge 消除、A-1 supersession routing；ATK1-3（knowledge_base 三條獨立攻擊）全 pin；A-5 parse-gate pins（controller 親寫 test-only，M4c false-green 歸零）。對外敘事價值：**一個 project 自己嘅 CI 全綠之下，外部 audit 可以打穿——而我哋收編、修復、逐條如實標狀態，包括認返自己判錯嗰句。**這是 suite 即產品嘅完整示範。
+
 ## 6. 程序備忘
 
 - Protocol 內化：每輪「verdict 整合先 merge」全程零 working-tree 撞車；controller SPEC/BACKLOG commits 同 worker code commits 永遠分離；worker 自報 guard baseline 與 pushed origin/main 有差異時由 verifier 釐清（round 1 case）。
