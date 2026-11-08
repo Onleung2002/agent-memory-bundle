@@ -67,6 +67,15 @@
 3. **[誠實確認] receipt writer 偽造喺 L1/L2 不可偵測**（constructive 攻擊 ok:true）——artifacts 全程如實 disclaim（L4/M4 scope），零 overclaim。
 4. **[語意裁定] chain walk 係向 origin 方向行**：tail 嘅 supersedes 指向 ancestor，ancestor file 冇咗 → broken chain ok:false（fail-closed 方向正確；恢復 = re-issue 新 chain）。
 
+## Audit hotfix 輪（2026-11-08，獨立 audit=deepseek；d0dfa48+360f1e1+dbc8413，GLM verify）
+1. **[已修] HIGH×2 + §4 + §11**：receipt accounting 綁 target 唔綁世代、delete() 全 return path self-verify、surrogate/NaN typed + wedge 消除、bundle.id grammar + collision refuse。詳見 docs/AUDIT_2026-11-08.md 逐項表。
+2. **[已修] A-1 fresh-path id collision**：同 bundle resuscitate overwrite 路由 `_reissue_receipt`（supersession）；ATK1-3 pinned（含 ATK3 兩 mode + 恰好一個 tail）。
+3. **[已 pin] A-5 parse gate**：8 條 NaN-literal pins；M4c mutation 紅×5。
+4. **[範圍擴大] A-2 silent-skip**：`recover()` 對 unreadable/poisoned manifest 靜默 skip（broad `except ValueError: continue`）——typed gate 喺 reader/下游 fire（pins 已證）；修法 = skip 計數入 `_self_check` 或收窄 except。
+5. **[backlog] A-3**：毒 manifest 塞住全 root deletes（fail-closed 正確）——SECURITY.md 補 availability 句。**[backlog] A-4**：`_safe_id` 尾底線摺疊 non-injective。
+6. **[M4 Round C 待裁決]**：§3 lock/CAS、§5 L2 authorization+receipt、§6 put_bundle journal enforcement、§7/§15 ack identity+pending、§8 budget floor、§9 duplicate winner 語意、§10 id-wide 刪除通道定性、§12 record id grammar+NFC、§13 bundle inventory、§14 numeric serialization——每條帶 audit 建議修法，見 AUDIT_2026-11-08.md。
+7. **[程序] Audit 揭 M3 round-3 BACKLOG #1「無 laundering」判斷錯**（controller 當時 repro digest 相同 mask 咗問題）——該條已由今輪 HIGH#1 修復取代；記錄跟事實。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
