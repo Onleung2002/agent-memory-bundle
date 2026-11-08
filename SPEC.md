@@ -84,6 +84,7 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
   - `record_ids`：精確有序比對（list equality）。
   - `bodies`：按 id 對照；每個 id 嘅 body 精確相等。
   - `digests_valid: true`：所有輸出 records 嘅 `integrity.digest` == SHA-256(canonical(輸出 body))（截斷 re-digest 後）。
+  - `digests`：per-id 精確 digest 比對——`{id: hex}`，每個列出 id 嘅輸出 `integrity.digest` 必須逐字元相等（load-03 用此鎖死 raw-UTF8 canonical bytes）。
   - `truncated`：精確有序比對。
   - `tombstones`：**只比對 scenario 檔明文 `compare:` 欄位清單入面嘅 keys**（例如 `compare: ["target_id","reason","derived_artifacts"]`）——未被列嘅 keys 唔比對。
   - 未喺 expect 出現嘅欄位一律唔比對。
