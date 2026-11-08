@@ -325,6 +325,69 @@ def _check_supersede(scenario, expect):
     return failures
 
 
+def _check_regen(scenario, expect):
+    """Two tombstone generations for one target (adversarial audit HIGH#1,
+    Repro A): delete -> the target resurrects with a DIFFERENT digest ->
+    re-delete naming a new derived artifact splits the tombstone
+    generation. The second receipt must account the UNION of real removals
+    across BOTH generations (never the stale copy alone), verify ok, and
+    leave the first receipt's file on disk (its digest differs now that
+    the receipt id preimage binds the tombstone digest).
+    """
+    failures = []
+    fixed_now = "2026-11-06T00:00:00Z"
+    inp = scenario["input"]
+    deletion = inp["delete"]
+    args = (deletion["bundle_id"], deletion["target_id"], deletion["reason"])
+    with tempfile.TemporaryDirectory() as tmp:
+        service = L1DeletionService(
+            Path(tmp) / "root", clock=lambda: fixed_now
+        )
+        for manifest in inp.get("bundles", []):
+            service.put_bundle(manifest)
+        first = service.delete(*args)
+        first_digest = first["receipt"]["removed_records"][0]["digest"]
+        for manifest in inp.get("resurrect", []):
+            service.put_bundle(manifest)
+        second = service.delete(
+            *args, derived_artifacts=inp.get("new_artifacts", [])
+        )
+
+        if "receipt_ok" in expect:
+            check = service.verify_receipt(second)
+            if check["ok"] != expect["receipt_ok"]:
+                failures.append(
+                    f"second receipt ok={check['ok']}, want "
+                    f"{expect['receipt_ok']}: {check['problems']}"
+                )
+        claimed = sorted(
+            r["digest"] for r in second["receipt"]["removed_records"]
+        )
+        if "removed_digests" in expect and claimed != expect["removed_digests"]:
+            failures.append(
+                f"removed_digests: want {expect['removed_digests']}, got {claimed}"
+            )
+        if expect.get("names_first_removal") and first_digest not in claimed:
+            failures.append(
+                "second receipt dropped the first deletion's digest "
+                "(union accounting broken)"
+            )
+        if "journal_generations" in expect:
+            count = len(service.journal_tombstones())
+            if count != expect["journal_generations"]:
+                failures.append(
+                    f"journal generations {count}, want "
+                    f"{expect['journal_generations']}"
+                )
+        if "receipt_files" in expect:
+            count = len(service.receipt_paths())
+            if count != expect["receipt_files"]:
+                failures.append(
+                    f"receipt files {count}, want {expect['receipt_files']}"
+                )
+    return failures
+
+
 def main():
     files = sorted(SCENARIO_DIR.glob("*.yaml"))
     if not files:
@@ -338,6 +401,7 @@ def main():
             "import": _check_import,
             "propagate": _check_propagate,
             "supersede": _check_supersede,
+            "regen": _check_regen,
         }.get(op, _check_load)
         failures = checker(scenario, scenario.get("expect", {}))
         if failures:

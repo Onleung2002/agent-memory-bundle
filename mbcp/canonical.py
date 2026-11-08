@@ -16,6 +16,32 @@ import json
 import re
 from datetime import datetime, timezone
 
+
+class NonFiniteConstantError(ValueError):
+    """JSON text contained ``NaN``/``Infinity``/``-Infinity``.
+
+    These literals are accepted by ``json.loads`` by default but are not
+    canonical JSON (SPEC 1.4) and crash ``canonical_bytes`` later with an
+    untyped ``ValueError``. Readers of externally-supplied bytes reject
+    them at parse time via :func:`json_loads_strict`.
+    """
+
+
+def _reject_constant(value):
+    raise NonFiniteConstantError(
+        f"non-finite JSON constant {value!r} is not canonical JSON"
+    )
+
+
+def json_loads_strict(text):
+    """Parse JSON text, rejecting NaN/Infinity literals as typed errors.
+
+    Drop-in for ``json.loads`` on externally-supplied bytes (bundle
+    manifests, tombstone journals, removal evidence, recovery logs,
+    receipts, propagation packs/acks/journals).
+    """
+    return json.loads(text, parse_constant=_reject_constant)
+
 _TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )

@@ -1,0 +1,136 @@
+{
+  "id": "DEL-08",
+  "spec_version": "0.1",
+  "title": "same target, two tombstone generations (artifacts change): the receipt accounts the UNION of real removals",
+  "op": "regen",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-del08-main"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-001",
+            "kind": "fact",
+            "body": "synthetic regen keep",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "04c5521f0a80d72e43a94bb5e32f280e0dc267edcc32e699e772854de8f74a03"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-002",
+            "kind": "fact",
+            "body": "synthetic regen original",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "9e9baca4d9677bd58985824ba281d8a3558908405cda1fe9f2abef804564335d"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ],
+    "delete": {
+      "bundle_id": "sc-del08-main",
+      "target_id": "rec-002",
+      "reason": "synthetic erasure regen scenario"
+    },
+    "resurrect": [
+      {
+        "bundle": {
+          "id": "sc-del08-stale"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-002",
+            "kind": "fact",
+            "body": "synthetic regen STALE variant",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "fea13e93561611b57ebf07010f6c545bade60115fb9a7fc52362cdec83f2620b"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ],
+    "new_artifacts": ["chunk:rec-002:0"]
+  },
+  "expect": {
+    "receipt_ok": true,
+    "removed_digests": [
+      "9e9baca4d9677bd58985824ba281d8a3558908405cda1fe9f2abef804564335d",
+      "fea13e93561611b57ebf07010f6c545bade60115fb9a7fc52362cdec83f2620b"
+    ],
+    "names_first_removal": true,
+    "journal_generations": 2,
+    "receipt_files": 2
+  }
+}
