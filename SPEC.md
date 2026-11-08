@@ -33,6 +33,7 @@ load_policy:
 - tombstone = monotonic record：target id、timestamp、reason、衍生 artifact 清單（facts/edges/chunks/embedding-cache keys）。
 - Importers MUST tombstone-first（先刪後加），令 stale bundle 不能復活已刪內容。
 - **Load path 同樣 enforce**：`load()` 必先收集所有 input bundles 嘅 tombstones，任何被 target 嘅 record 唔會出現喺結果——stale bundle 喺 load 階段都唔可以復活已刪內容。`lifecycle: "deleted"` 嘅 records 同樣被 filter（`archived` 保留）。
+- **`lifecycle: "deleted"` 係 id-wide 刪除訊號**（v0.1 precision pass 收緊）：load path 對 `lifecycle:"deleted"` 嘅處理同 tombstone 同等——凡任何 input bundle 入面存在 `lifecycle:"deleted"` 嘅 copy，該 id 喺**所有** bundles 嘅 active copies 都唔會載入（唔止嗰個 copy 本身）。收緊理由：per-record filter 令「同 id 另一 bundle active」成為復活路徑。`archived` 唔受影響。
 - **Tombstone dedupe**：同一 `target_id` 多個 tombstones → `deleted_at`/`reason` 取最新者，但 `derived_artifacts` 取**全部 copies 嘅 sorted UNION**（L3 證據唔可以因 merge 而縮水）。
 - **`deleted_at` 比較**：dedupe 嘅新舊判斷按 RFC3339 instant（timezone-aware datetime）比較，唔係字串比較——`2026-06-01T00:00:00+08:00` 晚於同刻嘅 `Z` 表示。無法 parse 嘅 `deleted_at` → `LoadValidationError`。
 - **Dedupe tie**：多個 tombstone `deleted_at` 相同時，canonical SHA-256 最大者勝（order-independent，同 manifest 排序嘅 content-digest tiebreak 原則一致）。
@@ -59,6 +60,7 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 `load()` 對 input 做**結構性**驗證：
 - **Unknown extra fields → passthrough retained**（P3 unknown-field retention）：record 任何額外欄位原樣保留喺輸出。
 - **Malformed structure → `LoadValidationError`**（唔係 KeyError/TypeError）：缺 required fields、類型錯、enum 值唔合法、`integrity.digest` 唔係 64 位小寫 hex，一律 reject。
+- **Build path manifest 必填**：`build_bundle`/`validate_bundle`（build path）要求 manifest 帶齊 `bundle`、`mbcp_version`、`records`、`tombstones` 四個 keys（缺 key = build-path error；空 array 合法）。Load path 保持 tolerant reader（缺 key 容忍成空 list，P3）——不對稱係明文設計，唔係遺漏。
 - 嚴格 schema validation（`additionalProperties: false`）只用於 **build path**（`build_bundle`/`validate_*`）；load path 係 tolerant reader。
 
 ### 1.6 Integrity digest（SC-INT）
