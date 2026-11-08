@@ -61,6 +61,12 @@
 6. **[INFO] 誠實天花板**：digest-chain integrity only、零簽名（M4/L4）；自洽偽造會 import——已被 mutation-enforced 誠實條款 pin 住，任何對外文案必須維持呢個框架。
 7. **[INFO] UC1 handover pack**（scope-filtered handover + intake attestation gate 完整流）未做——本輪只做 pack intake gate。
 
+## M3 round 3 verify（2026-11-08，verifier=GLM；ce2d709 PASS-WITH-ADVISORIES，11 mutations 零 false-green）
+1. **[LOW·inherited] fresh-path 同 id receipt overwrite**：deleted → resuscitated → deleted again 嘅 fresh path 產生同 receipt id（id preimage = {bundle_id, target_id, merged deleted_at}）→ `_atomic_write` 覆寫原 receipt file。M2 起已存在（verifier 於 ff8d6de 重現、controller 親手重現確認），round 3 冇引入；無 laundering（新 receipt accounting 更全、chain link 被覆寫會 fail-closed）。風險：caller 持有嘅第一個 receipt digest 靜默 dangling、audit trail 失去首份 bytes。→ M4 候選：fresh-path id preimage 加 tombstone_digest/nonce，或已存在 receipt 時行 supersession。**commit message「append-only」對呢條 path 唔準確——記錄跟事實。**
+2. **[INFO] `_latest_receipt` 跨 target supersedes 汙染**：X 嘅 receipt 聲稱 supersedes Y 嘅 receipt → Y 嘅 tail 被 hide → Y retry 出 DeletionIncompleteError（availability 而唔係 integrity，fail-closed）。
+3. **[誠實確認] receipt writer 偽造喺 L1/L2 不可偵測**（constructive 攻擊 ok:true）——artifacts 全程如實 disclaim（L4/M4 scope），零 overclaim。
+4. **[語意裁定] chain walk 係向 origin 方向行**：tail 嘅 supersedes 指向 ancestor，ancestor file 冇咗 → broken chain ok:false（fail-closed 方向正確；恢復 = re-issue 新 chain）。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
