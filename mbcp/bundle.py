@@ -418,18 +418,21 @@ def load(bundles):
        through and are retained)
     1. integrity digests are verified; records whose digest does not match
        their body are dropped (SPEC 1.6)
-    2. records with lifecycle="deleted" are filtered out
-    3. ALL tombstones from ALL bundles are gathered and applied before any
-       record is returned — a stale bundle can never resurrect a deleted
-       record (SPEC 1.2, load path)
-    4. manifests are ordered by (bundle id, canonical SHA-256 of the
+    2. id-wide deletion pre-pass (SPEC 1.2): the ids targeted by ALL
+       tombstones from ALL bundles PLUS the ids of ALL records with
+       lifecycle="deleted" from ALL bundles are gathered BEFORE any record
+       is emitted. A record carrying such an id is excluded entirely —
+       even an active (or archived) copy of the same id in another bundle
+       cannot load. lifecycle="deleted" is thus an id-wide deletion signal,
+       treated exactly like a tombstone; lifecycle="archived" is unaffected
+    3. manifests are ordered by (bundle id, canonical SHA-256 of the
        manifest) — duplicate bundle ids get a content-digest tiebreak, so
        the result never depends on input order (SPEC 1.4)
-    5. duplicate ids merged per load_policy.merge (mixed modes:
+    4. duplicate ids merged per load_policy.merge (mixed modes:
        error_on_conflict dominates; all-last -> last; otherwise first)
-    6. ordered by priority (critical > standard > opportunistic), then the
+    5. ordered by priority (critical > standard > opportunistic), then the
        deterministic manifest position as stable tie-break
-    7. max_chars is the CLASS budget: the effective budget of a priority
+    6. max_chars is the CLASS budget: the effective budget of a priority
        class is the MINIMUM max_chars declared by any loaded record of
        that class, consumed cumulatively; over-budget records follow
        load_policy.on_budget_exceed. truncate_last re-digests the
@@ -439,17 +442,28 @@ def load(bundles):
     # deterministic order, content-digest tiebreak for duplicate bundle ids
     manifests.sort(key=lambda m: (m["bundle"]["id"], canonical_sha256(m)))
 
+    # SPEC 1.2 id-wide deletion pre-pass, applied BEFORE any record is
+    # emitted. Two equivalent deletion signals, gathered across ALL input
+    # manifests: explicit tombstones, and records whose lifecycle is
+    # "deleted" (an id-wide deletion signal, not merely a per-record
+    # filter). Every copy of a targeted id — active, archived, deleted —
+    # in ANY bundle is excluded from the result, so a bundle holding an
+    # active copy of an id deleted elsewhere can never resurrect it.
     tombstoned = set()
     for manifest in manifests:
         for tombstone in manifest.get("tombstones", []):
             tombstoned.add(tombstone["target_id"])
+    deleted_ids = set()
+    for manifest in manifests:
+        for record in manifest.get("records", []):
+            if record.get("lifecycle") == "deleted":
+                deleted_ids.add(record["id"])
+    excluded = tombstoned | deleted_ids
 
     entries = []
     for manifest_index, manifest in enumerate(manifests):
         for index, record in enumerate(manifest.get("records", [])):
-            if record["id"] in tombstoned:
-                continue
-            if record.get("lifecycle") == "deleted":
+            if record["id"] in excluded:
                 continue
             # A-07 (SPEC 1.6): non-string body -> silent drop, no exception
             if not isinstance(record["body"], str):

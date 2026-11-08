@@ -46,6 +46,12 @@
 1. **[LOW] load/build `deleted_at` grammar 不對稱**：load path 用裸 `fromisoformat`（接受 space-separator/basic-format，拒 RFC3339-legal 小寫 t/z），build path 用 schema regex（較嚴）。統一兩邊 grammar 或修 SPEC §1.2 句子。
 2. **[INFO] `validate_tombstone` 內 `_check_deleted_at_rfc3339` 係 dead layer**（schema `format: date-time` 更嚴、先 fired）——加 layering 註解免日後 dead-code drift。
 
+## M3 round 1 verify（2026-11-08，verifier=GLM；8de7e06 PASS-WITH-ADVISORIES，8 mutations 零 false-green）
+1. **[advisory] digest-failed `lifecycle:"deleted"` 嘅 id-wide signal 無 test pin**：verifier 手工驗證語意正確（signal 喺 digest 驗證之前收集，digest 壞都排除該 id 全部 copies，fail-closed）；但未來「先驗 digest 先信 lifecycle」重構會靜默翻轉——建議加 unit test。
+2. **[需 Isaac wording pin] SPEC §1.2「active copies…archived 唔受影響」有歧義**：strict-literal 讀法下被 deleted id 嘅 archived copies 仍會載入，但同句「處理同 tombstone 同等」+ 實證（tombstone 會排除 archived copies）支持 worker 實現嘅讀法（archived-of-deleted 都排除，已有 test pin）。建議 SPEC 加句：「archived 唔係刪除訊號；被 deleted id 嘅 archived copies 一樣被排除，同 tombstone」。
+3. **[nit] `load()` docstring 步驟編號失實**：lifecycle scan 實際喺 digest 驗證之前（bundle.py:471-475 before :477），docstring 編號倒轉——reword。
+4. **[勘誤] M1 advisory #2 前提部分錯**：manifest schema 自 M1（`a086cd0`）已 required 四 keys；真正缺口係「build/load 不對稱無明文」——今輪已用測試 pin 返（build 拒缺 key、load 容忍）。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
