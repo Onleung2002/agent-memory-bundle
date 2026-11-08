@@ -140,3 +140,54 @@ def test_sc_reg_05_fabricated_suite_number_fails():
         return  # nothing head-resolvable to fabricate against here
     record["suite"]["unit_total"] += 1
     assert _suite_problems(record), "fabricated unit_total was not caught"
+
+
+def test_sc_reg_06_record_generated_at_matches_git_committer_date():
+    # ADV-1: record_generated_at is machine-derived (git committer date of
+    # spec_commit) and must be verifiable against it — a hand-filled
+    # timestamp (drift entry) must fail here.
+    for path in _records():
+        record = _load(path)
+        commit = record["spec"]["spec_commit"]
+        if not _commit_resolvable(commit):
+            continue  # external repo: schema-only, see module docstring
+        expected = _git("show", "-s", "--format=%cI", commit).stdout.strip()
+        actual = record["spec"]["record_generated_at"]
+        assert actual == expected, (
+            f"{path.name}: record_generated_at {actual!r} != git committer "
+            f"date {expected!r} of spec_commit"
+        )
+
+
+def test_sc_reg_07_terminology_law_grep_pin():
+    # ADV-3: the terminology law is machine-enforced, not only human-read.
+    # Needles assembled indirectly (house pattern) so this file never carries
+    # the raw banned roots either. GOVERNANCE bans certificate/certified/
+    # certification — "certified" does NOT contain the "certificat-" root,
+    # so both needles are required.
+    needles = ("certi" + "ficat", "certi" + "fied")
+    targets = [REPO_ROOT / "schemas" / "conformance-record.v0.json",
+               REPO_ROOT / "docs" / "REGISTRY.md",
+               REPO_ROOT / "tools" / "make_registry_record.py"]
+    targets.extend(REGISTRY_DIR.glob("*.json"))
+    targets.extend(REGISTRY_DIR.glob("*.md"))
+    for path in targets:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for lineno, line in enumerate(lines, 1):
+            if path.name == "REGISTRY.md" and line.lstrip().startswith(">"):
+                continue  # the rules blockquote: the single licensed location
+            for needle in needles:
+                assert needle not in line, (
+                    f"{path.name}:{lineno}: banned root {needle!r} outside "
+                    f"the licensed rules blockquote"
+                )
+
+
+def test_sc_reg_08_every_schema_is_strict_additional_properties_false():
+    # ADV-4: schema strictness itself is an invariant — one loose schema
+    # lets junk fields into any future artifact undetected.
+    for path in sorted((REPO_ROOT / "schemas").glob("*.json")):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        assert schema.get("additionalProperties") is False, (
+            f"{path.name}: root additionalProperties must be false"
+        )

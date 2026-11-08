@@ -9,9 +9,10 @@ plus a human-readable `.md` rendering of the same content.
 ## Rules
 
 **Terminology law (Isaac ruling; GOVERNANCE.md principle 2).** The following
-paragraph is quoted verbatim as the rule itself — it is the only place this
-vocabulary may appear anywhere in the registry, its schema, its tooling, or
-its tests:
+paragraph is an authorized English rendering of the rule as decided — it is
+the only place this vocabulary may appear anywhere in the registry, its
+schema, its tooling, or its tests (enforced by
+`test_sc_reg_07_terminology_law_grep_pin`):
 
 > TERMINOLOGY LAW (Isaac ruling; GOVERNANCE.md principle 2): before any
 > accreditation exists, output is called **Conformance Report / Evidence
