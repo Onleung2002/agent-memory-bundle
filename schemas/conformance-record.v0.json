@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mbcp.dev/schemas/conformance-record.v0.json",
+  "title": "MBCP conformance registry record (v0)",
+  "description": "One registry entry in docs/registry/: a conformance report for a single implementation against SPEC v0.1. Upgrade path runs self-declaration -> verifier-attested; before any accreditation exists every record is a Conformance Report / Evidence Pack and must carry the honest-framing limitation sentence (enforced by tests/test_registry.py).",
+  "type": "object",
+  "required": [
+    "implementation",
+    "spec",
+    "suite",
+    "attestation",
+    "limitations",
+    "external_benchmark"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "implementation": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "producer"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Implementation's own semver (GOVERNANCE principle 3); not the spec version."
+        },
+        "repo_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer": {
+          "enum": [
+            "home",
+            "external"
+          ],
+          "description": "home = this repository's reference implementation; external = produced by an outside party per CONTRIBUTING.md."
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": [
+        "spec_version",
+        "spec_commit",
+        "record_generated_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "spec_version": {
+          "const": "0.1"
+        },
+        "spec_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Full commit hash the suite numbers were produced against. Auto-filled by tools/make_registry_record.py from git metadata (git rev-parse HEAD); hand-filling is the drift entry point and is banned."
+        },
+        "record_generated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC3339 timezone-aware timestamp. Auto-filled by tools/make_registry_record.py from git metadata (git log -1 --format=%cI); never hand-filled."
+        }
+      }
+    },
+    "suite": {
+      "type": "object",
+      "required": [
+        "unit_passed",
+        "unit_total",
+        "scenarios_passed",
+        "scenarios_total",
+        "runner",
+        "inventory_tool",
+        "fail_set"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "unit_passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unit_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scenarios_passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scenarios_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runner": {
+          "const": "tools/run_scenarios.py"
+        },
+        "inventory_tool": {
+          "const": "python3 tools/test_inventory.py"
+        },
+        "fail_set": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Names of failing tests/scenarios at generation time. tools/make_registry_record.py refuses to generate a record unless both suites are fully green, so a committed record must have an empty fail_set; tests/test_registry.py pins that."
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "required": [
+        "kind",
+        "method"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "self-declaration",
+            "verifier-attested"
+          ],
+          "description": "Upgrade path: a record enters as self-declaration and may be upgraded to verifier-attested after an independent verification session replays the implementation report (see docs/REGISTRY.md)."
+        },
+        "verifier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Required, minItems 1. Must include verbatim: \"digest-chain integrity only; third-party-verifiable attestation arrives with L4 signing (roadmap); this record is a Conformance Report, not a legal opinion\" — pinned by tests/test_registry.py."
+    },
+    "external_benchmark": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "scope",
+          "relationship"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scope": {
+            "type": "string",
+            "minLength": 1
+          },
+          "relationship": {
+            "enum": [
+              "independent",
+              "cross-reference-candidate"
+            ]
+          },
+          "result": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "description": "Reserved for future cross-referencing of independent benchmarks. Empty array in v0.1; do not name any real product until an entry is actually accepted."
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}
