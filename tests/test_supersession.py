@@ -1,12 +1,17 @@
-"""Receipt supersession (SPEC 1.2.2, M3 round 3, RFC Q4/Q5).
+"""Receipt supersession (SPEC 1.2.2, M3 round 3, RFC Q4/Q5) + A-1 pins.
 
 Covers the whole supersession contract:
 
-- the single re-issue trigger: a delete() retry whose target is already
+- the growth re-issue trigger: a delete() retry whose target is already
   gone, whose latest receipt fails verification SOLELY because known
   removals grew (recovery log / evidence) — the retry writes a NEW
   immutable receipt whose ``supersedes`` is the old receipt's digest and
   whose ``removed_records`` cover every known removal;
+- the A-1 re-issue trigger (fresh-path id collision): a copy of the target
+  resurrected in the SAME tombstone generation replays a live receipt's
+  exact id preimage — the fresh-path delete must route through
+  supersession (new receipt, supersedes the chain tail, distinct id) and
+  never overwrite an immutable receipt file (ATK1/ATK2/ATK3 below);
 - chain semantics: only the chain TAIL can verify ok; every ``supersedes``
   link must resolve to a real, digest-matching, same-target receipt;
   broken links, digest-mismatched links, cross-target links and circular
@@ -347,3 +352,203 @@ def test_reissued_receipt_rebinds_journal_and_evidence():
         result = service.verify_receipt(broken)
         assert result["ok"] is False
         assert any("under-report" in p for p in result["problems"])
+
+
+# --- A-1 (post-hotfix advisory): fresh-path id collision vs resurrection ----
+
+
+def _resurrect_same_bundle(service, record, bundle_id="bundle-alpha"):
+    """Put a (resurrected) copy of the target back into a live bundle via
+    put_bundle ALONE — no delete(), no recover() (the ATK2/ATK3 floor)."""
+    manifest = service.get_bundle(bundle_id)
+    manifest["records"] = list(manifest.get("records", [])) + [record]
+    service.put_bundle(manifest)
+
+
+def _ok_true_receipts(service):
+    """Every on-disk receipt that currently verifies ok:True."""
+    ok = []
+    for path in service.receipt_paths():
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        if service.verify_receipt(receipt)["ok"]:
+            ok.append(receipt)
+    return ok
+
+
+def test_atk1_stale_gate_retry_reissues_superseding_receipt():
+    # ATK1 (STALE gate): delete -> novel-digest resurrection -> recover()
+    # -> the issued receipt is ok:False (under-report) -> delete() retry
+    # re-issues a superseding receipt, ok:True, accounting the union of
+    # every known removal. (Same sequence as
+    # test_underreport_retry_reissues_superseding_receipt, pinned here
+    # under the ATK1 name with the intermediate ok:False checkpoint.)
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        r1 = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        assert service.verify_receipt(r1)["ok"] is True
+        original_digest = r1["receipt"]["removed_records"][0]["digest"]
+
+        stale_digest = _grow_recovery(service)
+        assert stale_digest != original_digest
+
+        failing = service.verify_receipt(r1)
+        assert failing["ok"] is False
+        assert any("under-report" in p for p in failing["problems"])
+        assert any(stale_digest in p for p in failing["problems"])
+
+        r2 = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+
+        assert r2["receipt"]["id"] != r1["receipt"]["id"]
+        assert r2["receipt"]["supersedes"] == r1["integrity"]["digest"]
+        covered = {
+            (r["id"], r["digest"]) for r in r2["receipt"]["removed_records"]
+        }
+        assert covered == {("rec-002", original_digest), ("rec-002", stale_digest)}
+        assert service.verify_receipt(r2)["ok"] is True
+        assert len(_ok_true_receipts(service)) == 1
+
+
+def test_atk2_put_bundle_resurrection_fails_receipt_closed():
+    # ATK2 (fail-closed floor): delete issues an ok:True receipt; a copy
+    # of the target put back via put_bundle ALONE (no delete, no recover)
+    # must flip that receipt to ok:False — no receipt can stay ok:True
+    # while its target is live anywhere under the service root.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        receipt = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        assert service.verify_receipt(receipt)["ok"] is True
+
+        _resurrect_same_bundle(
+            service,
+            make_record("rec-002", "fact", "synthetic two", OWNER, created=FIXED_TS),
+        )
+
+        result = service.verify_receipt(receipt)
+        assert result["ok"] is False
+        assert any(
+            "still present in bundle bundle-alpha" in p
+            for p in result["problems"]
+        )
+
+
+def test_atk3_same_generation_resurrection_routes_to_reissue():
+    # ATK3 mode A (A-1 repro, SAME tombstone generation): delete (r3) ->
+    # growth retry supersedes (r4, ok:True) -> resurrect the SAME digest
+    # in the SAME bundle -> delete again. The fresh path's receipt id
+    # collides with r3's file; the fix routes through supersession: a NEW
+    # receipt id superseding the chain tail (r4), every earlier receipt
+    # file byte-intact, r4's chain link resolvable (never "broken ... "
+    # forever), exactly one ok:True tail, retries stay idempotent.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        r3 = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        stale_digest = _grow_recovery(service)
+        r4 = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        assert r4["receipt"]["supersedes"] == r3["integrity"]["digest"]
+        assert service.verify_receipt(r4)["ok"] is True
+
+        r3_bytes = _receipt_path(service, r3).read_bytes()
+        r4_bytes = _receipt_path(service, r4).read_bytes()
+
+        # same body -> same digest -> same tombstone generation on re-delete
+        _resurrect_same_bundle(
+            service,
+            make_record("rec-002", "fact", "synthetic two", OWNER, created=FIXED_TS),
+        )
+        r5 = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+
+        # NEW receipt id via supersession (preimage folds supersedes in)
+        assert r5["receipt"]["id"] not in {r3["receipt"]["id"], r4["receipt"]["id"]}
+        assert r5["receipt"]["supersedes"] == r4["integrity"]["digest"]
+        # union accounting survives: original + recovered digest both named
+        assert {
+            (r["id"], r["digest"]) for r in r5["receipt"]["removed_records"]
+        } == {
+            ("rec-002", r3["receipt"]["removed_records"][0]["digest"]),
+            ("rec-002", stale_digest),
+        }
+        # NO receipt file is ever overwritten
+        assert _receipt_path(service, r3).read_bytes() == r3_bytes
+        assert _receipt_path(service, r4).read_bytes() == r4_bytes
+        assert len(service.receipt_paths()) == 3
+        # r4 is cleanly superseded by r5 — its link to r3 stays resolvable
+        # (the A-1 bug left it "broken supersession chain" forever)
+        old_tail = service.verify_receipt(r4)
+        assert old_tail["ok"] is False
+        assert any("superseded" in p for p in old_tail["problems"])
+        assert not any("broken supersession chain" in p for p in old_tail["problems"])
+        assert not any("circular" in p for p in old_tail["problems"])
+        # chain integrity end to end: origin superseded, single ok tail
+        origin = service.verify_receipt(r3)
+        assert origin["ok"] is False
+        assert any("superseded" in p for p in origin["problems"])
+        assert not any("broken supersession chain" in p for p in origin["problems"])
+        assert service.verify_receipt(r5)["ok"] is True
+        assert len(_ok_true_receipts(service)) == 1
+
+        # idempotency guard survives: a retry with nothing new writes nothing
+        again = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        assert again == r5
+        assert len(service.receipt_paths()) == 3
+
+
+def test_atk3_new_generation_resurrection_distinct_receipts_single_tail():
+    # ATK3 mode B (A-1 repro, NEW tombstone generation): same sequence,
+    # but the resurrected copy has a NOVEL digest and the re-delete grows
+    # derived_artifacts — the merged tombstone is a new generation, so the
+    # fresh receipt gets a distinct id WITHOUT a supersedes link; the two
+    # receipts coexist byte-intact, and exactly ONE ok:True tail remains
+    # (no multiple-tail id-space blowup).
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        r3 = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        original_digest = r3["receipt"]["removed_records"][0]["digest"]
+        stale_digest = _grow_recovery(service)
+        r4 = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        assert service.verify_receipt(r4)["ok"] is True
+
+        r3_bytes = _receipt_path(service, r3).read_bytes()
+        r4_bytes = _receipt_path(service, r4).read_bytes()
+
+        fresh = make_record(
+            "rec-002", "fact", "resurrected fresh copy", OWNER, created=FIXED_TS
+        )
+        fresh_digest = fresh["integrity"]["digest"]
+        assert fresh_digest not in {original_digest, stale_digest}
+        _resurrect_same_bundle(service, fresh)
+        r5 = service.delete(
+            "bundle-alpha",
+            "rec-002",
+            "synthetic erasure",
+            derived_artifacts=["emb:rec-002"],
+        )
+
+        # new generation -> distinct id, no supersession link
+        assert r5["receipt"]["id"] not in {r3["receipt"]["id"], r4["receipt"]["id"]}
+        assert "supersedes" not in r5["receipt"]
+        # distinct receipts coexist, earlier files byte-intact
+        assert _receipt_path(service, r3).read_bytes() == r3_bytes
+        assert _receipt_path(service, r4).read_bytes() == r4_bytes
+        assert len(service.receipt_paths()) == 3
+        # the union now names all three digests; only r5 is ok:True
+        assert {
+            (r["id"], r["digest"]) for r in r5["receipt"]["removed_records"]
+        } == {
+            ("rec-002", original_digest),
+            ("rec-002", stale_digest),
+            ("rec-002", fresh_digest),
+        }
+        assert service.verify_receipt(r5)["ok"] is True
+        outdated = service.verify_receipt(r4)
+        assert outdated["ok"] is False
+        assert any(
+            "removed_records do not match recorded deletion evidence" in p
+            for p in outdated["problems"]
+        )
+        assert service.verify_receipt(r3)["ok"] is False
+        assert len(_ok_true_receipts(service)) == 1
+
+        # the nothing-present retry returns the single tail, writes nothing
+        again = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        assert again == r5
+        assert len(service.receipt_paths()) == 3

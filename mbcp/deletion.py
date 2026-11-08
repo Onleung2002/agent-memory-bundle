@@ -53,22 +53,37 @@ receipts: a receipt that under-reports a recovered removal keeps failing
 verification with a problem naming the unreported digest, instead of
 laundering the removal back into ``ok: True``.
 
-Receipt supersession (SPEC 1.2.2, RFC Q4/Q5) — the one healing path:
+Receipt supersession (SPEC 1.2.2, RFC Q4/Q5) — the healing paths:
 
-``delete()`` has exactly one re-issue trigger: a retry that finds the
-target already gone, whose latest receipt fails verification SOLELY
-because known removals grew past what that receipt names (recovery log /
-evidence growth). Instead of raising, the retry writes a NEW immutable
-receipt whose ``supersedes`` is the old receipt's ``integrity.digest`` and
-whose ``removed_records`` cover every known removal. Receipts are never
-modified in place — the superseded receipt stays on disk, still verifying
-``ok: False`` when checked alone (a superseded receipt is a stale
-under-report; only the chain tail can verify ok). Chain integrity (each
-``supersedes`` link resolves to a real, digest-matching, same-target
-receipt; no cycles) is a RUNTIME check in ``verify_receipt`` — JSON Schema
-has no graph constraints. :class:`DeletionIncompleteError` stays reserved
-for genuinely incomplete or inconsistent state (surviving copies, broken
-chains, tampered receipts, unreadable journals).
+``delete()`` has exactly two re-issue triggers:
+
+1. a retry that finds the target already gone, whose latest receipt fails
+   verification SOLELY because known removals grew past what that receipt
+   names (recovery log / evidence growth). Instead of raising, the retry
+   writes a NEW immutable receipt whose ``supersedes`` is the old
+   receipt's ``integrity.digest`` and whose ``removed_records`` cover
+   every known removal.
+2. a fresh-path delete (target present again) whose computed receipt id
+   is ALREADY on disk: a copy of the target resurrected in the same
+   tombstone generation replays the exact id preimage
+   ``{bundle_id, target_id, deleted_at, tombstone_digest}``, so writing
+   would ``_atomic_write`` OVER an existing immutable receipt — destroying
+   its bytes and breaking every live ``supersedes`` link anchored to its
+   digest (advisory A-1). The fresh receipt is routed through supersession
+   instead: it supersedes the current CHAIN TAIL for that target (the
+   colliding file may itself be a superseded mid-chain receipt), which
+   folds ``supersedes`` into the id preimage so the new id is distinct,
+   and every earlier file stays byte-intact.
+
+Receipts are never modified in place — the superseded receipt stays on
+disk, still verifying ``ok: False`` when checked alone (a superseded
+receipt is a stale under-report; only the chain tail can verify ok). Chain
+integrity (each ``supersedes`` link resolves to a real, digest-matching,
+same-target receipt; no cycles) is a RUNTIME check in ``verify_receipt`` —
+JSON Schema has no graph constraints. :class:`DeletionIncompleteError`
+stays reserved for genuinely incomplete or inconsistent state (surviving
+copies, broken chains, tampered receipts, unreadable journals, or a
+receipt-file collision whose chain tail cannot be resolved).
 """
 
 import hashlib
@@ -599,8 +614,11 @@ class L1DeletionService:
         accounting (recovery-log / evidence growth), a fresh receipt is
         re-issued instead, superseding the old one (SPEC 1.2.2) — repeated
         retries without new removals then return that chain tail unchanged.
-        Failures from any other cause still raise
-        :class:`DeletionIncompleteError`.
+        A fresh-path delete that computes a receipt id already on disk
+        (same-target, same-generation resurrection, advisory A-1) is
+        routed through the same supersession machinery rather than
+        overwriting the immutable receipt file. Failures from any other
+        cause still raise :class:`DeletionIncompleteError`.
 
         ``derived_artifacts`` from the caller are unioned into the journal
         tombstone; ``reason`` is only used when no tombstone for this target
@@ -713,11 +731,16 @@ class L1DeletionService:
         #    this target recorded in evidence (across ALL tombstone
         #    generations) or in the recovery log must be named, and
         #    _write_receipt self-verifies before persisting (audit HIGH#2).
+        #    reissue_on_id_collision (advisory A-1): a same-generation
+        #    resurrection replays this receipt's exact id preimage; never
+        #    overwrite the existing immutable receipt file — supersede the
+        #    chain tail instead.
         return self._write_receipt(
             bundle_id,
             tombstone,
             self._known_removals(target_id),
             now=now,
+            reissue_on_id_collision=True,
         )
 
     def _ensure_journal_tombstone(self, tombstone, journal_entries):
@@ -834,12 +857,49 @@ class L1DeletionService:
             )
         return receipt
 
-    def _write_receipt(self, bundle_id, tombstone, removed_records, *, now=None):
+    def _write_receipt(
+        self,
+        bundle_id,
+        tombstone,
+        removed_records,
+        *,
+        now=None,
+        reissue_on_id_collision=False,
+    ):
+        """Write a freshly built receipt, self-checked (audit HIGH#2).
+
+        ``reissue_on_id_collision`` (advisory A-1, fresh-path delete only):
+        a copy of the target resurrected in the SAME tombstone generation
+        replays this receipt's exact id preimage, so the computed file path
+        already exists. Receipts are immutable — ``_atomic_write`` would
+        destroy the existing file's bytes AND every live ``supersedes``
+        link anchored to its digest (a superseding receipt whose link can
+        no longer resolve is a permanently broken chain). Route through
+        :meth:`_reissue_receipt` instead: the new receipt supersedes the
+        current chain TAIL for this target (the colliding file may itself
+        be a superseded mid-chain receipt), the ``supersedes`` value folds
+        into the id preimage so the new id is provably distinct, and no
+        existing file is touched. If no chain tail can be resolved, the
+        state is inconsistent and stays fail-closed
+        (:class:`DeletionIncompleteError`).
+        """
         receipt = build_receipt(
             bundle_id, tombstone, removed_records, issued_at=now or self._clock()
         )
-        self._self_check(receipt)
         path = self.receipts_dir / f"{receipt['receipt']['id']}.json"
+        if reissue_on_id_collision and path.exists():
+            target_id = tombstone["target_id"]
+            tail = self._latest_receipt(target_id)
+            if tail is None:
+                raise DeletionIncompleteError(
+                    f"receipt file {path} already exists but no chain-tail "
+                    f"receipt for target {target_id!r} can be resolved; "
+                    "refusing to overwrite an existing immutable receipt"
+                )
+            return self._reissue_receipt(
+                bundle_id, target_id, tail, tombstone, now=now
+            )
+        self._self_check(receipt)
         _atomic_write(path, canonical_bytes(receipt))
         return receipt
 
@@ -858,6 +918,18 @@ class L1DeletionService:
         to plain ``(issued_at, id)`` order only if every candidate is
         claimed as superseded (a broken chain then surfaces through
         :meth:`verify_receipt` as :class:`DeletionIncompleteError`).
+
+        Tail disambiguation (advisory A-1, ATK3 mode B): distinct tombstone
+        generations produce distinct receipts with NO supersession link
+        between them, so a target can have several non-superseded
+        candidates at once, and ``(issued_at, id)`` order is not a sound
+        tiebreak (equal timestamps pick the lexicographic id, which may
+        belong to a stale under-reporting generation). The semantic tail
+        is the receipt that CAN verify against current state — verifying
+        candidates are preferred, and only among them does ``(issued_at,
+        id)`` order apply. Without this, a plain retry would re-issue over
+        the stale candidate and mint a SECOND ok tail (multiple-tail
+        id-space blowup).
         """
         found = []
         superseded_digests = set()
@@ -883,6 +955,9 @@ class L1DeletionService:
             if receipt["integrity"]["digest"] not in superseded_digests
         ]
         pool = tails or found
+        verifying = [r for r in pool if self.verify_receipt(r)["ok"]]
+        if verifying:
+            pool = verifying
         pool.sort(key=lambda r: (r["receipt"]["issued_at"], r["receipt"]["id"]))
         return pool[-1]
 

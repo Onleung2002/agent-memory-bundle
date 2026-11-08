@@ -124,28 +124,41 @@ def test_repro_a_receipt_accounts_union_across_tombstone_generations():
         )
 
 
-def test_same_id_overwrite_path_reports_union():
-    # The same-id overwrite can still occur when the tombstone generation
-    # is unchanged (delete -> same-digest resurrection -> re-delete): the
-    # receipt id preimage is identical. Post-fix it is ACCOUNTING-SAFE —
-    # the re-issued receipt reports the target-wide union, so the
-    # previously-issued receipt's removals never vanish.
+def test_same_id_resurrection_routes_to_supersession():
+    # Advisory A-1 ruling (b): when the tombstone generation is unchanged
+    # (delete -> same-digest resurrection -> re-delete), the receipt id
+    # preimage is identical, so the fresh-path delete used to
+    # _atomic_write OVER the existing immutable receipt file — destroying
+    # its bytes and breaking any live supersedes link anchored to its
+    # digest. Fixed: the fresh path routes through supersession — a NEW
+    # receipt id whose supersedes is the chain tail, the earlier file
+    # byte-intact, the target-wide union still accounted.
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp)
         original = _record("rec-X", "original secret")
         original_digest = _digest(original)
         r1 = service.delete("bundle-alpha", "rec-X", "gdpr erasure")
+        r1_file = service.receipts_dir / f"{r1['receipt']['id']}.json"
+        r1_bytes = r1_file.read_bytes()
 
         service.put_bundle(
             build_bundle("bundle-alpha", records=[original])  # same digest back
         )
         r2 = service.delete("bundle-alpha", "rec-X", "gdpr erasure")
 
-        assert r2["receipt"]["id"] == r1["receipt"]["id"]  # overwrite path
+        # supersession, not overwrite: new id, link to the old receipt,
+        # old file byte-intact, union accounting intact
+        assert r2["receipt"]["id"] != r1["receipt"]["id"]
+        assert r2["receipt"]["supersedes"] == r1["integrity"]["digest"]
         assert [(r["id"], r["digest"]) for r in r2["receipt"]["removed_records"]] == [
             ("rec-X", original_digest)
         ]
+        assert r1_file.read_bytes() == r1_bytes
+        assert len(service.receipt_paths()) == 2
         assert service.verify_receipt(r2)["ok"] is True
+        stale = service.verify_receipt(r1)
+        assert stale["ok"] is False
+        assert any("superseded" in p for p in stale["problems"])
 
 
 # ---------------------------------------------------------------------------
