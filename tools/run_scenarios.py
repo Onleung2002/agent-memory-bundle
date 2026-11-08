@@ -27,17 +27,49 @@ YAML 1.2), so the runner stays pure-stdlib. Format:
                                         # SPEC 3 A-05: declared keys only)
       }
     }
+
+    {
+      "id": "PRP-01",
+      "title": "cross-root propagation removes a stale destination copy",
+      "op": "propagate",
+      "input": {
+        "source_bundles": [...],   # manifests put_bundle'd into the source root
+        "dest_bundles": [...],     # manifests put_bundle'd into the dest root
+        "delete": [{"bundle_id": "...", "target_id": "...", "reason": "..."}],
+        "export_targets": [...],   # optional target_id filter for the pack
+        "tamper": "first-tombstone-reason"  # optional forgery injection
+      },
+      "expect": {
+        "error": "PackValidationError",   # optional: import must fail this way
+        "dest_record_ids": [...],  # load() of dest manifests after import
+        "journal_status": "acked"  # optional: last propagation.jsonl status
+      }
+    }
+
+The propagate op builds two real service roots in a temp dir (a pure-data
+scenario cannot express two roots), runs the deletes on the source, exports
+a propagation pack, imports it into the destination, then re-reads the
+destination manifests and load()s them — all through the public API.
 """
 
 import hashlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from mbcp import canonical_bytes, import_bundle, load  # public API only
+from mbcp import (  # public API only
+    L1DeletionService,
+    canonical_bytes,
+    export_propagation_pack,
+    import_bundle,
+    import_propagation_pack,
+    load,
+    read_propagation_journal,
+)
 
 SCENARIO_DIR = REPO_ROOT / "tests" / "scenarios"
 
@@ -135,6 +167,71 @@ def _check_import(scenario, expect):
     return failures
 
 
+def _check_propagate(scenario, expect):
+    """Cross-root story: source deletes -> export pack -> dest imports.
+
+    Two real service roots in a temp dir (a pure-data scenario cannot hold
+    two roots); everything runs through the public API with a fixed clock
+    so the run is deterministic.
+    """
+    failures = []
+    fixed_now = "2026-11-06T00:00:00Z"
+    with tempfile.TemporaryDirectory() as tmp:
+        source = L1DeletionService(
+            Path(tmp) / "source", clock=lambda: fixed_now
+        )
+        dest = L1DeletionService(Path(tmp) / "dest", clock=lambda: fixed_now)
+        for manifest in scenario["input"].get("source_bundles", []):
+            source.put_bundle(manifest)
+        dest_ids = []
+        for manifest in scenario["input"].get("dest_bundles", []):
+            dest.put_bundle(manifest)
+            dest_ids.append(manifest["bundle"]["id"])
+
+        try:
+            for deletion in scenario["input"].get("delete", []):
+                source.delete(
+                    deletion["bundle_id"],
+                    deletion["target_id"],
+                    deletion["reason"],
+                )
+            pack = export_propagation_pack(
+                source,
+                scenario["input"].get("export_targets") or None,
+                source_root="root-source-scenario",
+                now=fixed_now,
+            )
+            if scenario["input"].get("tamper") == "first-tombstone-reason":
+                pack["pack"]["tombstones"][0]["reason"] += " (tampered)"
+            import_propagation_pack(dest.root, pack, now=fixed_now)
+        except Exception as err:  # noqa: BLE001
+            if expect.get("error") != type(err).__name__:
+                return [f"unexpected {type(err).__name__}: {err}"]
+        else:
+            if expect.get("error"):
+                return [f"expected error {expect['error']}, none raised"]
+
+        if "dest_record_ids" in expect:
+            try:
+                records = load([dest.get_bundle(bid) for bid in dest_ids])
+            except Exception as err:  # noqa: BLE001
+                return [f"dest load failed: {type(err).__name__}: {err}"]
+            ids = [r["id"] for r in records]
+            if ids != expect["dest_record_ids"]:
+                failures.append(
+                    f"dest_record_ids: want {expect['dest_record_ids']}, got {ids}"
+                )
+
+        if "journal_status" in expect:
+            entries = read_propagation_journal(dest.root)
+            got = entries[-1]["status"] if entries else None
+            if got != expect["journal_status"]:
+                failures.append(
+                    f"journal_status: want {expect['journal_status']!r}, got {got!r}"
+                )
+    return failures
+
+
 def main():
     files = sorted(SCENARIO_DIR.glob("*.yaml"))
     if not files:
@@ -144,7 +241,10 @@ def main():
     for path in files:
         scenario = json.loads(path.read_text(encoding="utf-8"))
         op = scenario.get("op", "load")
-        checker = _check_import if op == "import" else _check_load
+        checker = {
+            "import": _check_import,
+            "propagate": _check_propagate,
+        }.get(op, _check_load)
         failures = checker(scenario, scenario.get("expect", {}))
         if failures:
             failed += 1

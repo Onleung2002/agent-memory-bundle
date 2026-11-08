@@ -52,6 +52,15 @@
 3. **[nit] `load()` docstring 步驟編號失實**：lifecycle scan 實際喺 digest 驗證之前（bundle.py:471-475 before :477），docstring 編號倒轉——reword。
 4. **[勘誤] M1 advisory #2 前提部分錯**：manifest schema 自 M1（`a086cd0`）已 required 四 keys；真正缺口係「build/load 不對稱無明文」——今輪已用測試 pin 返（build 拒缺 key、load 容忍）。
 
+## M3 round 2 verify（2026-11-08，verifier=GLM；5bacd97 PASS-WITH-ADVISORIES，6 mutations 零 false-green）
+1. **[LOW] propagation.jsonl 每 re-import +1 acked line**：import 冇 pending-first、acked line 無條件 append（propagation.py:266）——同一 pack N 次 import 出 N 條 line。同 docstring「every intake attempt」一致，但 test 名 `no_new_journal_lines` 只量 L1 journal，易誤讀。→ 文檔 pin「attempts audit」或去重。
+2. **[LOW] propagation.jsonl invalid-UTF-8 → bare UnicodeDecodeError**：`read_propagation_journal` 只包 JSONDecodeError（propagation.py:313）；L1 `journal_tombstones` 同款。→ bytes decode + typed error。
+3. **[LOW] ack 檔案 read-back 無 integrity re-check**：no-op re-import 直接 `json.loads` on-disk ack（propagation.py:244），corrupt → JSONDecodeError leak；tampered → 原樣返回。writer-root 內信任模型（同 BACKLOG M2 #4）。→ read 時驗 integrity 或文檔寫明。
+4. **[INFO] RFC UC2 ack 回傳腿未做**：ack 只喺 importing root，source root 無 pending→acked 路徑——minimal scope 內正確，記低免得日後當做咗。
+5. **[INFO] manifest tombstones array 保留 import order**（content-equal、order 不同）；`load()`/records/acks 完全 order-independent——繼承 L1 journal-order 行為。
+6. **[INFO] 誠實天花板**：digest-chain integrity only、零簽名（M4/L4）；自洽偽造會 import——已被 mutation-enforced 誠實條款 pin 住，任何對外文案必須維持呢個框架。
+7. **[INFO] UC1 handover pack**（scope-filtered handover + intake attestation gate 完整流）未做——本輪只做 pack intake gate。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
