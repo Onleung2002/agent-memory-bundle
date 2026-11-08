@@ -28,6 +28,16 @@ from .deletion import (
     UnknownTargetError,
     build_receipt,
 )
+from .propagation import (
+    ACK_LIMITATIONS,
+    PackValidationError,
+    PropagationError,
+    PropagationJournalError,
+    export_propagation_pack,
+    import_propagation_pack,
+    read_propagation_journal,
+    record_pending_propagation,
+)
 
 __all__ = [
     "canonical_bytes",
@@ -53,4 +63,12 @@ __all__ = [
     "ReceiptValidationError",
     "UnknownTargetError",
     "build_receipt",
+    "ACK_LIMITATIONS",
+    "PackValidationError",
+    "PropagationError",
+    "PropagationJournalError",
+    "export_propagation_pack",
+    "import_propagation_pack",
+    "read_propagation_journal",
+    "record_pending_propagation",
 ]

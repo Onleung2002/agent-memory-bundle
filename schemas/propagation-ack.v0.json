@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mbcp.dev/schemas/propagation-ack.v0.json",
+  "title": "MBCP L2 propagation ack (v0)",
+  "description": "Ack artifact emitted when a destination root imports a propagation pack. Binds the import to the pack digest and the exact tombstone digests applied. Digest-chain integrity only: an ack is NOT third-party-proof of erasure (no signatures; cryptographic signing is M4/L4 scope).",
+  "type": "object",
+  "required": ["ack", "integrity"],
+  "additionalProperties": false,
+  "properties": {
+    "ack": {
+      "type": "object",
+      "required": [
+        "for_source_root",
+        "pack_digest",
+        "imported_tombstone_digests",
+        "imported_at",
+        "limitations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "for_source_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pack_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "imported_tombstone_digests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "description": "Sorted canonical SHA-256 digests of every pack tombstone present in this root's journal after the import (the full set, so a no-op re-import yields the same ack)."
+        },
+        "imported_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "limitations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["algo", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "algo": {"const": "sha256"},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

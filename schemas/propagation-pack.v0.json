@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mbcp.dev/schemas/propagation-pack.v0.json",
+  "title": "MBCP L2 propagation pack (v0)",
+  "description": "Cross-root tombstone propagation pack (RFC Q1/Q2). Digest-chain integrity only: no signatures exist, so tamper-evidence relies on the writer of the source root not forging; cryptographic signing is M4/L4 scope. The pack must never be presented as third-party-proof of erasure.",
+  "type": "object",
+  "required": ["pack", "integrity"],
+  "additionalProperties": false,
+  "properties": {
+    "pack": {
+      "type": "object",
+      "required": [
+        "source_root",
+        "issued_at",
+        "tombstones",
+        "tombstone_digests",
+        "pack_digest",
+        "attestation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tombstones": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tombstone"
+          }
+        },
+        "tombstone_digests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "pack_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the canonical form of the SORTED tombstone digest list."
+        },
+        "attestation": {
+          "type": "object",
+          "required": ["source_root", "pack_digest", "issued_at"],
+          "additionalProperties": false,
+          "properties": {
+            "source_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pack_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "issued_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["algo", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "algo": {"const": "sha256"},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  },
+  "$defs": {
+    "tombstone": {
+      "type": "object",
+      "required": ["target_id", "deleted_at", "reason", "derived_artifacts"],
+      "additionalProperties": false,
+      "properties": {
+        "target_id": {"type": "string", "minLength": 1},
+        "deleted_at": {"type": "string", "format": "date-time"},
+        "reason": {"type": "string"},
+        "derived_artifacts": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}
