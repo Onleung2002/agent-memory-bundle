@@ -535,25 +535,36 @@ def test_delete_retry_after_receipt_crash_reissues_receipt():
         assert service.verify_receipt(receipt)["ok"] is True
 
 
-def test_delete_heals_resurrected_record_without_duplicate_receipt():
+def test_delete_heals_resurrected_record_via_supersession():
     # A stale manifest restored after deletion is removed again on the next
     # delete, reusing the journal tombstone and the recorded evidence.
+    # Advisory A-1 ruling (b): the healed delete replays the first receipt's
+    # exact id preimage, so it must NOT overwrite the immutable receipt
+    # file — it routes through supersession (new id, supersedes the chain
+    # tail) and the first receipt stays byte-intact on disk.
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp)
         first = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        first_file = service.receipts_dir / f"{first['receipt']['id']}.json"
+        first_bytes = first_file.read_bytes()
         service.put_bundle(_manifest())  # stale copy comes back
         assert "rec-002" in _ids(service, "bundle-alpha")
 
         second = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
 
         assert "rec-002" not in _ids(service, "bundle-alpha")
-        assert second["receipt"]["id"] == first["receipt"]["id"]
+        assert second["receipt"]["id"] != first["receipt"]["id"]
+        assert second["receipt"]["supersedes"] == first["integrity"]["digest"]
         assert second["receipt"]["removed_records"] == first["receipt"][
             "removed_records"
         ]
-        assert len(service.receipt_paths()) == 1
+        assert first_file.read_bytes() == first_bytes
+        assert len(service.receipt_paths()) == 2
         assert len(service.journal_tombstones()) == 1
         assert service.verify_receipt(second)["ok"] is True
+        superseded = service.verify_receipt(first)
+        assert superseded["ok"] is False
+        assert any("superseded" in p for p in superseded["problems"])
 
 
 # ---------------------------------------------------------------------------

@@ -49,7 +49,13 @@ from pathlib import Path
 
 from . import _schema
 from .bundle import validate_tombstone
-from .canonical import canonical_bytes, canonical_sha256, utc_now
+from .canonical import (
+    NonFiniteConstantError,
+    canonical_bytes,
+    canonical_sha256,
+    json_loads_strict,
+    utc_now,
+)
 from .deletion import L1DeletionService, _atomic_write, _fsync_dir
 
 PACK_SCHEMA = None
@@ -316,8 +322,8 @@ def _read_ack(path):
     helper only guarantees a structurally sound artifact comes back.
     """
     try:
-        ack = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as err:
+        ack = json_loads_strict(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, NonFiniteConstantError) as err:
         raise PropagationError(f"corrupt ack artifact {path}: {err}") from err
     try:
         _schema.validate(ack, _ack_schema())
@@ -351,8 +357,8 @@ def read_propagation_journal(root):
                 f"corrupt propagation journal {path}:{lineno}: invalid UTF-8: {err}"
             ) from err
         try:
-            entry = json.loads(text)
-        except json.JSONDecodeError as err:
+            entry = json_loads_strict(text)
+        except (json.JSONDecodeError, NonFiniteConstantError) as err:
             raise PropagationJournalError(
                 f"corrupt propagation journal {path}:{lineno}: {err}"
             ) from err

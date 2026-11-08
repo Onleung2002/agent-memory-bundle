@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import math
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -16,6 +17,10 @@ _MERGE_MODES = {"append_first_wins", "append_last_wins", "error_on_conflict"}
 _BUDGET_MODES = {"truncate_last", "skip", "error"}
 _LIFECYCLES = {"active", "archived", "deleted"}
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+# Bundle-id grammar (adversarial audit §4, SPEC-level ruling): a bundle id
+# is a safe filename component — no characters that _safe_id() would have
+# to rewrite (which made distinct ids collide on one file), no "..".
+BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 _RECORD_SCHEMA = None
 _MANIFEST_SCHEMA = None
@@ -59,6 +64,67 @@ def _tombstone_schema():
     return _TOMBSTONE_SCHEMA
 
 
+def _reject_hostile_values(value, path="$", error_cls=None):
+    """Reject hostile-but-parseable JSON values anywhere in ``value``.
+
+    Adversarial audit §11: a conforming JSON document can carry lone
+    surrogates (``"\\ud800"`` — legal per RFC 8259, NOT encodable UTF-8)
+    and ``NaN``/``Infinity`` floats (accepted by ``json.loads``). Both
+    crash ``canonical_bytes`` with UNTYPED errors (UnicodeEncodeError /
+    ValueError) deep in the deletion path — after durable mutations, in
+    the worst case permanently wedging the whole service root. Reject
+    them here, at the boundary, as typed validation errors.
+
+    ``error_cls`` defaults to :class:`LoadValidationError`; the build
+    path passes ``_schema.ValidationError`` for equivalent strictness.
+    """
+    if error_cls is None:
+        error_cls = LoadValidationError
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8", "strict")
+        except UnicodeEncodeError as err:
+            raise error_cls(
+                f"{path}: string is not encodable UTF-8 (lone surrogate): {err}"
+            ) from err
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise error_cls(
+                f"{path}: non-finite number {value!r} is not canonical JSON"
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _reject_hostile_values(key, f"{path}.<key>", error_cls)
+            _reject_hostile_values(item, f"{path}.{key}", error_cls)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_hostile_values(item, f"{path}[{index}]", error_cls)
+
+
+def _check_bundle_id_grammar(bundle_id, error_cls=None):
+    """Enforce the bundle-id grammar on both validation paths.
+
+    The JSON Schema pattern pins ``^[A-Za-z0-9._-]{1,64}$``; ``..`` is
+    rejected here (the minimal validator has no ``not`` keyword). The
+    deletion service relies on this: ``_safe_id()`` must be injective
+    over grammar-valid ids or two bundles would share one file.
+    """
+    if error_cls is None:
+        error_cls = LoadValidationError
+    if (
+        not isinstance(bundle_id, str)
+        or not BUNDLE_ID_RE.match(bundle_id)
+        or ".." in bundle_id
+    ):
+        raise error_cls(
+            f"$.bundle.id: bundle id must match ^[A-Za-z0-9._-]{{1,64}}$ "
+            f"and must not contain '..', got {bundle_id!r}"
+        )
+
+
 def check_sensitivity_invariant(record):
     """Machine-checkable invariant (BACKLOG M2 #6, Isaac ruling 2026-11-06).
 
@@ -87,17 +153,21 @@ def check_sensitivity_invariant(record):
 
 def validate_record(record):
     _schema.validate(record, _record_schema())
+    _reject_hostile_values(record, "$", _schema.ValidationError)
     return check_sensitivity_invariant(record)
 
 
 def validate_tombstone(tombstone):
     _schema.validate(tombstone, _tombstone_schema())
+    _reject_hostile_values(tombstone, "$", _schema.ValidationError)
     _check_deleted_at_rfc3339(tombstone["deleted_at"], "$.tombstones[].deleted_at")
     return tombstone
 
 
 def validate_bundle(manifest):
     _schema.validate(manifest, _manifest_schema())
+    _reject_hostile_values(manifest, "$", _schema.ValidationError)
+    _check_bundle_id_grammar(manifest["bundle"]["id"], _schema.ValidationError)
     return manifest
 
 
@@ -340,8 +410,15 @@ def check_tombstone_on_load(tombstone, path="$.tombstones[]"):
 
 def check_manifest_on_load(manifest):
     _check(isinstance(manifest, dict), "$", "expected manifest object")
+    # audit §11: hostile-but-parseable values (lone surrogates, NaN /
+    # Infinity floats) are rejected HERE, as LoadValidationError, before
+    # any canonical_bytes call — never an unwrapped UnicodeEncodeError /
+    # ValueError from inside the loader or the deletion path.
+    _reject_hostile_values(manifest)
     bundle = _check_dict(manifest, "bundle", "$")
     _check_str(bundle, "id", "$.bundle", min_len=1)
+    # audit §4: the same bundle-id grammar as the build path / schema.
+    _check_bundle_id_grammar(bundle["id"])
     records = manifest.get("records", [])
     _check(isinstance(records, list), "$.records", "expected array")
     tombstones = manifest.get("tombstones", [])

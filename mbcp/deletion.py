@@ -53,22 +53,37 @@ receipts: a receipt that under-reports a recovered removal keeps failing
 verification with a problem naming the unreported digest, instead of
 laundering the removal back into ``ok: True``.
 
-Receipt supersession (SPEC 1.2.2, RFC Q4/Q5) — the one healing path:
+Receipt supersession (SPEC 1.2.2, RFC Q4/Q5) — the healing paths:
 
-``delete()`` has exactly one re-issue trigger: a retry that finds the
-target already gone, whose latest receipt fails verification SOLELY
-because known removals grew past what that receipt names (recovery log /
-evidence growth). Instead of raising, the retry writes a NEW immutable
-receipt whose ``supersedes`` is the old receipt's ``integrity.digest`` and
-whose ``removed_records`` cover every known removal. Receipts are never
-modified in place — the superseded receipt stays on disk, still verifying
-``ok: False`` when checked alone (a superseded receipt is a stale
-under-report; only the chain tail can verify ok). Chain integrity (each
-``supersedes`` link resolves to a real, digest-matching, same-target
-receipt; no cycles) is a RUNTIME check in ``verify_receipt`` — JSON Schema
-has no graph constraints. :class:`DeletionIncompleteError` stays reserved
-for genuinely incomplete or inconsistent state (surviving copies, broken
-chains, tampered receipts, unreadable journals).
+``delete()`` has exactly two re-issue triggers:
+
+1. a retry that finds the target already gone, whose latest receipt fails
+   verification SOLELY because known removals grew past what that receipt
+   names (recovery log / evidence growth). Instead of raising, the retry
+   writes a NEW immutable receipt whose ``supersedes`` is the old
+   receipt's ``integrity.digest`` and whose ``removed_records`` cover
+   every known removal.
+2. a fresh-path delete (target present again) whose computed receipt id
+   is ALREADY on disk: a copy of the target resurrected in the same
+   tombstone generation replays the exact id preimage
+   ``{bundle_id, target_id, deleted_at, tombstone_digest}``, so writing
+   would ``_atomic_write`` OVER an existing immutable receipt — destroying
+   its bytes and breaking every live ``supersedes`` link anchored to its
+   digest (advisory A-1). The fresh receipt is routed through supersession
+   instead: it supersedes the current CHAIN TAIL for that target (the
+   colliding file may itself be a superseded mid-chain receipt), which
+   folds ``supersedes`` into the id preimage so the new id is distinct,
+   and every earlier file stays byte-intact.
+
+Receipts are never modified in place — the superseded receipt stays on
+disk, still verifying ``ok: False`` when checked alone (a superseded
+receipt is a stale under-report; only the chain tail can verify ok). Chain
+integrity (each ``supersedes`` link resolves to a real, digest-matching,
+same-target receipt; no cycles) is a RUNTIME check in ``verify_receipt`` —
+JSON Schema has no graph constraints. :class:`DeletionIncompleteError`
+stays reserved for genuinely incomplete or inconsistent state (surviving
+copies, broken chains, tampered receipts, unreadable journals, or a
+receipt-file collision whose chain tail cannot be resolved).
 """
 
 import hashlib
@@ -80,7 +95,13 @@ from pathlib import Path
 
 from . import _schema
 from .bundle import make_tombstone, validate_bundle, validate_tombstone
-from .canonical import canonical_bytes, canonical_sha256, utc_now
+from .canonical import (
+    NonFiniteConstantError,
+    canonical_bytes,
+    canonical_sha256,
+    json_loads_strict,
+    utc_now,
+)
 from .tombstone import _merge_tombstones
 
 SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -116,6 +137,18 @@ class DeletionIncompleteError(DeletionError):
 
 class ReceiptValidationError(DeletionError):
     """Raised when a receipt artifact is malformed or tampered with."""
+
+
+class BundleIdCollisionError(DeletionError):
+    """Raised when a bundle file name is already used by a DIFFERENT id.
+
+    Adversarial audit §4: ``_safe_id()`` used to let two distinct bundle
+    ids (e.g. ``team/a`` and ``team_a``, or any two non-ASCII names) share
+    one file, silently dropping one bundle's data with no tombstone, no
+    evidence and no receipt. Grammar-valid ids (see schemas/manifest.v0)
+    are injective under ``_safe_id``; this guard refuses to overwrite a
+    pre-existing file whose stored manifest id differs — loud, not silent.
+    """
 
 
 _RECEIPT_SCHEMA = None
@@ -202,13 +235,20 @@ def build_receipt(
     artifact; the superseded receipt file is never modified. The link
     value feeds the receipt id preimage so a re-issue never collides with
     the receipt it replaces on disk.
+
+    The id preimage also binds ``tombstone_digest`` (audit §14): two
+    receipts for the same target issued in the same second with different
+    tombstone generations (e.g. ``derived_artifacts`` grew) must not
+    collide on one file.
     """
     issued_at = issued_at or utc_now()
     target_id = tombstone["target_id"]
+    tombstone_digest = canonical_sha256(tombstone)
     id_preimage = {
         "bundle_id": bundle_id,
         "target_id": target_id,
         "deleted_at": tombstone["deleted_at"],
+        "tombstone_digest": tombstone_digest,
     }
     if supersedes is not None:
         id_preimage["supersedes"] = supersedes
@@ -224,7 +264,7 @@ def build_receipt(
         "target_id": target_id,
         "reason": tombstone["reason"],
         "tombstone": tombstone,
-        "tombstone_digest": canonical_sha256(tombstone),
+        "tombstone_digest": tombstone_digest,
         "removed_records": [
             {"id": record["id"], "digest": record["integrity"]["digest"]}
             for record in removed_records
@@ -258,10 +298,35 @@ class L1DeletionService:
 
     # -- bundles ----------------------------------------------------------
     def put_bundle(self, manifest):
-        """Validate + atomically persist a manifest; returns its path."""
+        """Validate + atomically persist a manifest; returns its path.
+
+        Audit §4 / §11 gate: hostile-but-parseable manifests (lone
+        surrogates, NaN/Infinity, bundle ids outside the grammar) are
+        rejected HERE at ingest, loudly and typed — a poison manifest can
+        only enter ``bundles/`` by bypassing this API (another producer
+        writing files directly), and such legacy files fail typed,
+        naming the file, whenever delete()/recover()/get_bundle() touch
+        them. Audit §4 collision guard: a pre-existing file for this
+        ``_safe_id`` belonging to a DIFFERENT bundle id is never
+        overwritten silently.
+        """
         validate_bundle(manifest)
         bundle_id = manifest["bundle"]["id"]
         path = self.bundles_dir / f"{_safe_id(bundle_id)}.json"
+        if path.exists():
+            try:
+                existing = json_loads_strict(path.read_text(encoding="utf-8"))
+                existing_id = existing["bundle"]["id"]
+            except (OSError, KeyError, TypeError, ValueError) as err:
+                raise DeletionError(
+                    f"existing bundle file {path} is unreadable: {err}"
+                ) from err
+            if existing_id != bundle_id:
+                raise BundleIdCollisionError(
+                    f"bundle file {path} already holds bundle id "
+                    f"{existing_id!r}; refusing to overwrite it with "
+                    f"{bundle_id!r} (remove or rename the file deliberately)"
+                )
         _atomic_write(path, canonical_bytes(manifest))
         return path
 
@@ -273,25 +338,46 @@ class L1DeletionService:
         if not path.exists():
             raise DeletionError(f"unknown bundle {bundle_id!r} ({path})")
         try:
-            manifest = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as err:
+            manifest = json_loads_strict(path.read_text(encoding="utf-8"))
+        except ValueError as err:
             raise DeletionError(f"corrupt bundle manifest {path}: {err}") from err
-        validate_bundle(manifest)
+        try:
+            validate_bundle(manifest)
+        except ValueError as err:
+            raise DeletionError(f"invalid bundle manifest {path}: {err}") from err
+        if manifest["bundle"]["id"] != bundle_id:
+            raise DeletionError(
+                f"bundle manifest {path} declares id "
+                f"{manifest['bundle']['id']!r}, not the requested {bundle_id!r}"
+            )
         return manifest
 
     def _bundle_manifests(self):
-        """Every bundle under this service root: ``[(bundle_id, path, manifest)]``."""
+        """Every bundle under this service root: ``[(bundle_id, path, manifest)]``.
+
+        Fail-closed (audit §11): an unreadable or invalid manifest raises
+        the typed :class:`DeletionError` naming the offending file — never
+        a bare UnicodeEncodeError / ValueError from inside the scan, and
+        never a silent skip (a skipped manifest could hide a live copy of
+        a deletion target). Deletion scan/validate runs BEFORE any
+        journal append, so this failure leaves the root untouched.
+        """
         if not self.bundles_dir.exists():
             return []
         bundles = []
         for path in sorted(self.bundles_dir.glob("*.json")):
             try:
-                manifest = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as err:
+                manifest = json_loads_strict(path.read_text(encoding="utf-8"))
+            except ValueError as err:
                 raise DeletionError(
                     f"corrupt bundle manifest {path}: {err}"
                 ) from err
-            validate_bundle(manifest)
+            try:
+                validate_bundle(manifest)
+            except ValueError as err:
+                raise DeletionError(
+                    f"invalid bundle manifest {path}: {err}"
+                ) from err
             bundles.append((manifest["bundle"]["id"], path, manifest))
         return bundles
 
@@ -320,8 +406,8 @@ class L1DeletionService:
                     f"invalid UTF-8: {err}"
                 ) from err
             try:
-                tomb = json.loads(text)
-            except json.JSONDecodeError as err:
+                tomb = json_loads_strict(text)
+            except (json.JSONDecodeError, NonFiniteConstantError) as err:
                 raise DeletionError(
                     f"corrupt tombstone journal {self.journal_path}:{lineno}: {err}"
                 ) from err
@@ -356,8 +442,8 @@ class L1DeletionService:
         if not path.exists():
             return {"target_id": target_id, "removals": []}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as err:
+            data = json_loads_strict(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, NonFiniteConstantError) as err:
             raise DeletionError(f"corrupt removal evidence {path}: {err}") from err
         if not isinstance(data, dict) or data.get("target_id") != target_id:
             raise DeletionError(
@@ -407,12 +493,29 @@ class L1DeletionService:
         _atomic_write(self.evidence_path(target_id), canonical_bytes(data))
         return data
 
-    @staticmethod
-    def _removed_from_evidence(evidence, tombstone_digest):
+    def _known_removals(self, target_id):
+        """Every removal of ``target_id`` known to this service root.
+
+        TARGET-WIDE union (audit HIGH#1 fix): the delete-time removal
+        evidence across ALL tombstone generations PLUS every recovery-log
+        entry for the target. Accounting binds the TARGET, never one
+        tombstone generation — tombstone digests proliferate (derived
+        artifact growth, L2 imports, concurrent deletes) and scoping
+        evidence to one generation let an ``ok: True`` receipt omit real,
+        evidence-documented removals. A receipt must name this whole set
+        or verify ``ok: False``.
+        """
+        pairs = {
+            (entry["record_id"], entry["digest"])
+            for entry in self._read_evidence(target_id)["removals"]
+        }
+        pairs |= {
+            (entry["record_id"], entry["digest"])
+            for entry in self.recovery_removals(target_id)
+        }
         return [
-            {"id": entry["record_id"], "integrity": {"digest": entry["digest"]}}
-            for entry in evidence["removals"]
-            if entry["tombstone_digest"] == tombstone_digest
+            {"id": record_id, "integrity": {"digest": digest}}
+            for record_id, digest in sorted(pairs)
         ]
 
     # -- recovery log -------------------------------------------------------
@@ -458,8 +561,8 @@ class L1DeletionService:
             if not line.strip():
                 continue
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError as err:
+                entry = json_loads_strict(line)
+            except (json.JSONDecodeError, NonFiniteConstantError) as err:
                 raise DeletionError(
                     f"corrupt recovery log {self.recovery_path}:{lineno}: {err}"
                 ) from err
@@ -511,8 +614,11 @@ class L1DeletionService:
         accounting (recovery-log / evidence growth), a fresh receipt is
         re-issued instead, superseding the old one (SPEC 1.2.2) — repeated
         retries without new removals then return that chain tail unchanged.
-        Failures from any other cause still raise
-        :class:`DeletionIncompleteError`.
+        A fresh-path delete that computes a receipt id already on disk
+        (same-target, same-generation resurrection, advisory A-1) is
+        routed through the same supersession machinery rather than
+        overwriting the immutable receipt file. Failures from any other
+        cause still raise :class:`DeletionIncompleteError`.
 
         ``derived_artifacts`` from the caller are unioned into the journal
         tombstone; ``reason`` is only used when no tombstone for this target
@@ -521,8 +627,26 @@ class L1DeletionService:
         new ``derived_artifacts`` are not recorded for an already-finished
         deletion (issue a new delete after resuscitation if they matter).
         """
+        # Both ids flow into canonical_bytes (receipt id preimage,
+        # evidence path digest); a lone surrogate would crash untyped
+        # (audit §11) — reject loudly at the boundary.
+        for label, value in (("bundle id", bundle_id), ("target id", target_id)):
+            if not isinstance(value, str):
+                raise DeletionError(f"{label} must be a string, got {value!r}")
+            try:
+                value.encode("utf-8", "strict")
+            except UnicodeEncodeError as err:
+                raise DeletionError(
+                    f"{label} {value!r} is not encodable UTF-8: {err}"
+                ) from err
+
         self.get_bundle(bundle_id)  # unknown bundle is an error, not a no-op
 
+        # The whole-root scan/validate runs BEFORE any journal append:
+        # every manifest is validated up front, so a hostile or corrupt
+        # file fails here with a typed, file-naming error and the durable
+        # state is untouched (audit §11: no mid-flight UnicodeEncodeError
+        # after tombstone+evidence are durable).
         bundles = self._bundle_manifests()
         present = [
             (bid, record)
@@ -552,7 +676,6 @@ class L1DeletionService:
                     deleted_at=tombstone["deleted_at"],
                     derived_artifacts=artifacts,
                 )
-                self._append_journal(tombstone)
         else:
             tombstone = make_tombstone(
                 target_id,
@@ -560,6 +683,13 @@ class L1DeletionService:
                 deleted_at=now or self._clock(),
                 derived_artifacts=derived_artifacts,
             )
+        # Audit HIGH#1 (Repro B): the tombstone we embed in the evidence
+        # and the receipt MUST be durable in the journal. A MERGED
+        # tombstone (union of several generations — e.g. after an L2
+        # import brought a second generation) can equal NO journal line;
+        # an artifacts-diff condition misses exactly that case. Append
+        # unconditionally when no journal line equals it.
+        if not any(t == tombstone for t in journal_entries):
             self._append_journal(tombstone)
 
         # 2. durable evidence of WHAT is removed (the digests), so a retry
@@ -597,13 +727,32 @@ class L1DeletionService:
                 "no receipt issued"
             )
 
-        # 5. receipt last.
+        # 5. receipt last — with TARGET-WIDE accounting: every removal of
+        #    this target recorded in evidence (across ALL tombstone
+        #    generations) or in the recovery log must be named, and
+        #    _write_receipt self-verifies before persisting (audit HIGH#2).
+        #    reissue_on_id_collision (advisory A-1): a same-generation
+        #    resurrection replays this receipt's exact id preimage; never
+        #    overwrite the existing immutable receipt file — supersede the
+        #    chain tail instead.
         return self._write_receipt(
             bundle_id,
             tombstone,
-            self._removed_from_evidence(evidence, tombstone_digest),
+            self._known_removals(target_id),
             now=now,
+            reissue_on_id_collision=True,
         )
+
+    def _ensure_journal_tombstone(self, tombstone, journal_entries):
+        """Make ``tombstone`` durable in the journal (audit HIGH#1 Repro B).
+
+        A merged tombstone can equal NO journal line; a receipt embedding
+        an unjournaled tombstone fails its own verification, so every path
+        that writes (or re-issues) a receipt appends it first — appended
+        unconditionally, never gated on an artifacts diff.
+        """
+        if not any(t == tombstone for t in journal_entries):
+            self._append_journal(tombstone)
 
     def _delete_with_nothing_present(self, bundle_id, target_id, journal_entries, *, now=None):
         """Handle a delete whose target is already absent from every bundle."""
@@ -625,6 +774,7 @@ class L1DeletionService:
                 # and/or evidence) — re-issue a fresh receipt naming every
                 # known removal, superseding the old one, instead of
                 # raising. Any other failure stays DeletionIncompleteError.
+                self._ensure_journal_tombstone(tombstone, journal_entries)
                 return self._reissue_receipt(
                     bundle_id, target_id, existing, tombstone, now=now
                 )
@@ -633,11 +783,10 @@ class L1DeletionService:
                 f"against current state: {check['problems']}"
             )
         # Crash between manifest rewrite and receipt: the evidence written
-        # before the rewrite lets us issue an honest receipt now.
-        tombstone_digest = canonical_sha256(tombstone)
-        removed = self._removed_from_evidence(
-            self._read_evidence(target_id), tombstone_digest
-        )
+        # before the rewrite lets us issue an honest receipt now. The
+        # accounting is the target-wide union (all generations + recovery).
+        self._ensure_journal_tombstone(tombstone, journal_entries)
+        removed = self._known_removals(target_id)
         if not removed:
             raise DeletionIncompleteError(
                 f"target {target_id!r} is absent but no removal evidence was "
@@ -647,8 +796,9 @@ class L1DeletionService:
 
     def _underreport_due_to_growth(self, receipt):
         """Precise re-issue predicate (SPEC 1.2.2): the receipt names a
-        strict subset of the removals durably recorded for its tombstone
-        digest plus the recovery log, and invents nothing. Paired with
+        strict subset of the removals durably recorded for its TARGET —
+        the delete-time evidence across all tombstone generations plus the
+        recovery log — and invents nothing. Paired with
         :func:`_is_growth_underreport` (which whitelists the failure
         messages), this refuses to re-issue over tampering or broken
         chains — those stay :class:`DeletionIncompleteError`."""
@@ -656,7 +806,6 @@ class L1DeletionService:
         recorded = {
             (entry["record_id"], entry["digest"])
             for entry in self._read_evidence(body["target_id"])["removals"]
-            if entry["tombstone_digest"] == body["tombstone_digest"]
         }
         claimed = {
             (record["id"], record["digest"]) for record in body["removed_records"]
@@ -672,25 +821,12 @@ class L1DeletionService:
         """Write a fresh receipt superseding ``old_receipt`` (SPEC 1.2.2).
 
         The new receipt names EVERY removal known to the service root for
-        this target — delete-time evidence bound to the journal tombstone
-        digest plus the recovery log — and its ``supersedes`` is the old
-        receipt's ``integrity.digest``. The old receipt file is never
-        touched: receipts are immutable and supersession is append-only.
+        this target — the target-wide delete-time evidence union plus the
+        recovery log — and its ``supersedes`` is the old receipt's
+        ``integrity.digest``. The old receipt file is never touched:
+        receipts are immutable and supersession is append-only.
         """
-        tombstone_digest = canonical_sha256(tombstone)
-        recorded = {
-            (entry["record_id"], entry["digest"])
-            for entry in self._read_evidence(target_id)["removals"]
-            if entry["tombstone_digest"] == tombstone_digest
-        }
-        recovered = {
-            (entry["record_id"], entry["digest"])
-            for entry in self.recovery_removals(target_id)
-        }
-        removed = [
-            {"id": record_id, "integrity": {"digest": digest}}
-            for record_id, digest in sorted(recorded | recovered)
-        ]
+        removed = self._known_removals(target_id)
         receipt = build_receipt(
             bundle_id,
             tombstone,
@@ -698,15 +834,72 @@ class L1DeletionService:
             issued_at=now or self._clock(),
             supersedes=old_receipt["integrity"]["digest"],
         )
+        self._self_check(receipt)
         path = self.receipts_dir / f"{receipt['receipt']['id']}.json"
         _atomic_write(path, canonical_bytes(receipt))
         return receipt
 
-    def _write_receipt(self, bundle_id, tombstone, removed_records, *, now=None):
+    def _self_check(self, receipt):
+        """Audit HIGH#2 / BACKLOG M2 #1: NEVER issue a receipt that fails
+        its own ``verify_receipt`` — on ANY delete() return path.
+
+        This is the safety net, not the fix: FIX 1 (target-wide
+        accounting) makes the underlying inconsistency impossible; this
+        makes any residual violation loud (DeletionIncompleteError)
+        instead of letting a self-failing receipt reach a caller or disk.
+        Runs BEFORE the write, so a failing receipt is never persisted.
+        """
+        check = self.verify_receipt(receipt)
+        if not check["ok"]:
+            raise DeletionIncompleteError(
+                "refusing to issue a receipt that fails its own "
+                f"verification: {check['problems']}"
+            )
+        return receipt
+
+    def _write_receipt(
+        self,
+        bundle_id,
+        tombstone,
+        removed_records,
+        *,
+        now=None,
+        reissue_on_id_collision=False,
+    ):
+        """Write a freshly built receipt, self-checked (audit HIGH#2).
+
+        ``reissue_on_id_collision`` (advisory A-1, fresh-path delete only):
+        a copy of the target resurrected in the SAME tombstone generation
+        replays this receipt's exact id preimage, so the computed file path
+        already exists. Receipts are immutable — ``_atomic_write`` would
+        destroy the existing file's bytes AND every live ``supersedes``
+        link anchored to its digest (a superseding receipt whose link can
+        no longer resolve is a permanently broken chain). Route through
+        :meth:`_reissue_receipt` instead: the new receipt supersedes the
+        current chain TAIL for this target (the colliding file may itself
+        be a superseded mid-chain receipt), the ``supersedes`` value folds
+        into the id preimage so the new id is provably distinct, and no
+        existing file is touched. If no chain tail can be resolved, the
+        state is inconsistent and stays fail-closed
+        (:class:`DeletionIncompleteError`).
+        """
         receipt = build_receipt(
             bundle_id, tombstone, removed_records, issued_at=now or self._clock()
         )
         path = self.receipts_dir / f"{receipt['receipt']['id']}.json"
+        if reissue_on_id_collision and path.exists():
+            target_id = tombstone["target_id"]
+            tail = self._latest_receipt(target_id)
+            if tail is None:
+                raise DeletionIncompleteError(
+                    f"receipt file {path} already exists but no chain-tail "
+                    f"receipt for target {target_id!r} can be resolved; "
+                    "refusing to overwrite an existing immutable receipt"
+                )
+            return self._reissue_receipt(
+                bundle_id, target_id, tail, tombstone, now=now
+            )
+        self._self_check(receipt)
         _atomic_write(path, canonical_bytes(receipt))
         return receipt
 
@@ -725,13 +918,25 @@ class L1DeletionService:
         to plain ``(issued_at, id)`` order only if every candidate is
         claimed as superseded (a broken chain then surfaces through
         :meth:`verify_receipt` as :class:`DeletionIncompleteError`).
+
+        Tail disambiguation (advisory A-1, ATK3 mode B): distinct tombstone
+        generations produce distinct receipts with NO supersession link
+        between them, so a target can have several non-superseded
+        candidates at once, and ``(issued_at, id)`` order is not a sound
+        tiebreak (equal timestamps pick the lexicographic id, which may
+        belong to a stale under-reporting generation). The semantic tail
+        is the receipt that CAN verify against current state — verifying
+        candidates are preferred, and only among them does ``(issued_at,
+        id)`` order apply. Without this, a plain retry would re-issue over
+        the stale candidate and mint a SECOND ok tail (multiple-tail
+        id-space blowup).
         """
         found = []
         superseded_digests = set()
         for path in self.receipt_paths():
             try:
-                receipt = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
+                receipt = json_loads_strict(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
                 continue
             body = receipt.get("receipt", {})
             link = body.get("supersedes")
@@ -750,6 +955,9 @@ class L1DeletionService:
             if receipt["integrity"]["digest"] not in superseded_digests
         ]
         pool = tails or found
+        verifying = [r for r in pool if self.verify_receipt(r)["ok"]]
+        if verifying:
+            pool = verifying
         pool.sort(key=lambda r: (r["receipt"]["issued_at"], r["receipt"]["id"]))
         return pool[-1]
 
@@ -776,8 +984,21 @@ class L1DeletionService:
         targets = {t["target_id"] for t in journal}
         removed = []
         for path in sorted(self.bundles_dir.glob("*.json")):
-            manifest = json.loads(path.read_text(encoding="utf-8"))
-            validate_bundle(manifest)
+            # Fail-closed and typed (audit §11): an unreadable or invalid
+            # manifest raises DeletionError naming the file — never a
+            # bare UnicodeEncodeError mid-recovery.
+            try:
+                manifest = json_loads_strict(path.read_text(encoding="utf-8"))
+            except ValueError as err:
+                raise DeletionError(
+                    f"corrupt bundle manifest {path}: {err}"
+                ) from err
+            try:
+                validate_bundle(manifest)
+            except ValueError as err:
+                raise DeletionError(
+                    f"invalid bundle manifest {path}: {err}"
+                ) from err
             stale = [r for r in manifest.get("records", []) if r["id"] in targets]
             changed = bool(stale)
             if stale:
@@ -812,10 +1033,10 @@ class L1DeletionService:
         superseding = {}
         for path in self.receipt_paths():
             try:
-                artifact = json.loads(path.read_text(encoding="utf-8"))
+                artifact = json_loads_strict(path.read_text(encoding="utf-8"))
                 body = artifact["receipt"]
                 digest = artifact["integrity"]["digest"]
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (OSError, KeyError, TypeError, ValueError):
                 continue
             by_digest.setdefault(digest, artifact)
             link = body.get("supersedes")
@@ -850,7 +1071,16 @@ class L1DeletionService:
         receipt, and a non-tail receipt verified alone is an under-report.
         """
         if isinstance(receipt, (str, os.PathLike)):
-            receipt = json.loads(Path(receipt).read_text(encoding="utf-8"))
+            try:
+                receipt = json_loads_strict(
+                    Path(receipt).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as err:
+                return {
+                    "ok": False,
+                    "problems": [f"receipt unreadable: {err}"],
+                    "receipt_id": None,
+                }
         problems = []
         try:
             _validate_receipt(receipt)
@@ -859,11 +1089,27 @@ class L1DeletionService:
 
         body = receipt["receipt"]
         receipt_digest = receipt["integrity"]["digest"]
-        if canonical_sha256(body) != receipt_digest:
+        try:
+            body_digest = canonical_sha256(body)
+        except UnicodeEncodeError as err:
+            # A hostile receipt whose strings carry lone surrogates must
+            # fail verification with a problem, never crash untyped
+            # (audit §11).
+            body_digest = None
+            problems.append(f"receipt body is not encodable UTF-8: {err}")
+        if body_digest is not None and body_digest != receipt_digest:
             problems.append("receipt digest does not match its body (tampered)")
 
         # The receipt's own claims must be internally consistent...
-        if body["tombstone_digest"] != canonical_sha256(body["tombstone"]):
+        try:
+            embedded_digest = canonical_sha256(body["tombstone"])
+        except UnicodeEncodeError as err:
+            embedded_digest = None
+            problems.append(f"receipt tombstone is not encodable UTF-8: {err}")
+        if (
+            embedded_digest is not None
+            and body["tombstone_digest"] != embedded_digest
+        ):
             problems.append("tombstone_digest does not match the embedded tombstone")
         if body["reason"] != body["tombstone"]["reason"]:
             problems.append("receipt reason does not match the embedded tombstone")
@@ -898,7 +1144,11 @@ class L1DeletionService:
                 )
                 break
             linked_body = linked["receipt"]
-            if canonical_sha256(linked_body) != link:
+            try:
+                linked_digest = canonical_sha256(linked_body)
+            except UnicodeEncodeError:
+                linked_digest = None
+            if linked_digest != link:
                 problems.append(
                     "broken supersession chain: the receipt named by "
                     "supersedes does not match its own digest (tampered link)"
@@ -945,11 +1195,11 @@ class L1DeletionService:
 
         # Semantics (i): ok=True means the receipt accounts for EVERY
         # removal of this target known to the service root. Known removals
-        # = the delete-time evidence bound to this receipt's tombstone
-        # digest UNION the recovery log (copies removed later by recover()).
-        # A chain-tail receipt re-issued under SPEC 1.2.2 names the union;
-        # any other receipt must name exactly the delete-time evidence and
-        # every recovery entry it does not name is an under-report problem.
+        # are TARGET-WIDE (audit HIGH#1): the delete-time evidence across
+        # ALL tombstone generations (a target's evidence accumulates over
+        # every generation; accounting must not be scoped to the one
+        # generation named in the receipt) UNION the recovery log (copies
+        # removed later by recover()). Under-report = ok:False.
         try:
             recovered = self._read_recovery()
         except DeletionError as err:
@@ -964,14 +1214,15 @@ class L1DeletionService:
             }
         try:
             evidence = self._read_evidence(body["target_id"])
-        except DeletionError as err:
+        except (DeletionError, UnicodeEncodeError) as err:
+            # UnicodeEncodeError: a hostile receipt whose target_id carries
+            # a lone surrogate must fail verification typed, not crash.
             evidence = None
             problems.append(f"removal evidence unreadable: {err}")
         if evidence is not None:
             recorded = {
                 (entry["record_id"], entry["digest"])
                 for entry in evidence["removals"]
-                if entry["tombstone_digest"] == body["tombstone_digest"]
             }
             claimed = {
                 (record["id"], record["digest"])
@@ -993,8 +1244,28 @@ class L1DeletionService:
                     "known removals)"
                 )
 
-        if not self.bundle_path(body["bundle_id"]).exists():
+        bundle_manifest_path = self.bundle_path(body["bundle_id"])
+        if not bundle_manifest_path.exists():
             problems.append("bundle manifest missing")
+        else:
+            # Audit §4: existence is not identity — the manifest found at
+            # the safe path must actually declare this bundle id (a legacy
+            # aliased file must not satisfy the check vacuously).
+            try:
+                manifest = json_loads_strict(
+                    bundle_manifest_path.read_text(encoding="utf-8")
+                )
+                if (
+                    not isinstance(manifest, dict)
+                    or not isinstance(manifest.get("bundle"), dict)
+                    or manifest["bundle"].get("id") != body["bundle_id"]
+                ):
+                    problems.append(
+                        f"bundle manifest {bundle_manifest_path} does not "
+                        f"declare bundle id {body['bundle_id']!r}"
+                    )
+            except (OSError, ValueError) as err:
+                problems.append(f"bundle manifest unreadable: {err}")
         try:
             surviving = sorted(
                 {
