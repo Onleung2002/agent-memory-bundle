@@ -52,6 +52,23 @@ known to the service root — both the delete()-time removals recorded in
 receipts: a receipt that under-reports a recovered removal keeps failing
 verification with a problem naming the unreported digest, instead of
 laundering the removal back into ``ok: True``.
+
+Receipt supersession (SPEC 1.2.2, RFC Q4/Q5) — the one healing path:
+
+``delete()`` has exactly one re-issue trigger: a retry that finds the
+target already gone, whose latest receipt fails verification SOLELY
+because known removals grew past what that receipt names (recovery log /
+evidence growth). Instead of raising, the retry writes a NEW immutable
+receipt whose ``supersedes`` is the old receipt's ``integrity.digest`` and
+whose ``removed_records`` cover every known removal. Receipts are never
+modified in place — the superseded receipt stays on disk, still verifying
+``ok: False`` when checked alone (a superseded receipt is a stale
+under-report; only the chain tail can verify ok). Chain integrity (each
+``supersedes`` link resolves to a real, digest-matching, same-target
+receipt; no cycles) is a RUNTIME check in ``verify_receipt`` — JSON Schema
+has no graph constraints. :class:`DeletionIncompleteError` stays reserved
+for genuinely incomplete or inconsistent state (surviving copies, broken
+chains, tampered receipts, unreadable journals).
 """
 
 import hashlib
@@ -90,8 +107,10 @@ class DeletionIncompleteError(DeletionError):
 
     ``delete()`` raises this instead of returning a receipt whenever the
     target is still present in a bundle, or when service state is
-    inconsistent (a receipt exists that no longer verifies, or the target
-    vanished without any durable evidence of what was removed).
+    inconsistent (a receipt exists that fails verification for reasons
+    OTHER than accounted growth — see SPEC 1.2.2 supersession, which
+    heals pure under-reporting by re-issuing, or the target vanished
+    without any durable evidence of what was removed).
     """
 
 
@@ -154,22 +173,47 @@ def _validate_receipt(receipt):
     return receipt
 
 
-def build_receipt(bundle_id, tombstone, removed_records, *, issued_at=None):
+def _is_growth_underreport(problems):
+    """True when every verification problem names ACCOUNTED GROWTH (SPEC
+    1.2.2): the receipt under-reports removals durably recorded in the
+    deletion evidence or the recovery log. Any other problem (tampering,
+    journal mismatch, broken/circular chain, surviving copies) means
+    genuinely inconsistent state and stays fail-closed.
+    """
+    if not problems:
+        return False
+    return all(
+        problem == "removed_records do not match recorded deletion evidence"
+        or problem.startswith("recovery removed digest ")
+        for problem in problems
+    )
+
+
+def build_receipt(
+    bundle_id, tombstone, removed_records, *, issued_at=None, supersedes=None
+):
     """Build a schema-valid L1 receipt dict (with self-digest).
 
     ``removed_records`` is a list of record dicts that were removed in this
     deletion; only their id + integrity digest are retained in the receipt.
+
+    ``supersedes`` (SPEC 1.2.2) is the ``integrity.digest`` of the receipt
+    this receipt supersedes — a re-issued receipt is a FRESH immutable
+    artifact; the superseded receipt file is never modified. The link
+    value feeds the receipt id preimage so a re-issue never collides with
+    the receipt it replaces on disk.
     """
     issued_at = issued_at or utc_now()
     target_id = tombstone["target_id"]
+    id_preimage = {
+        "bundle_id": bundle_id,
+        "target_id": target_id,
+        "deleted_at": tombstone["deleted_at"],
+    }
+    if supersedes is not None:
+        id_preimage["supersedes"] = supersedes
     receipt_id = "rcpt-" + hashlib.sha256(
-        canonical_bytes(
-            {
-                "bundle_id": bundle_id,
-                "target_id": target_id,
-                "deleted_at": tombstone["deleted_at"],
-            }
-        )
+        canonical_bytes(id_preimage)
     ).hexdigest()[:16]
     body = {
         "id": receipt_id,
@@ -191,6 +235,8 @@ def build_receipt(bundle_id, tombstone, removed_records, *, issued_at=None):
         "propagation": {"propagated_to": []},
         "limitations": list(L1_LIMITATIONS),
     }
+    if supersedes is not None:
+        body["supersedes"] = supersedes
     receipt = {
         "receipt": body,
         "integrity": {"algo": "sha256", "digest": canonical_sha256(body)},
@@ -251,17 +297,30 @@ class L1DeletionService:
 
     # -- tombstone journal ------------------------------------------------
     def journal_tombstones(self):
-        """All tombstones in the append-only journal, in write order."""
+        """All tombstones in the append-only journal, in write order.
+
+        Decode hygiene (M3 round-2 verify advisory 2, mirrored from
+        ``read_propagation_journal``): the journal is read as bytes and
+        each line is decoded explicitly — invalid UTF-8 raises the typed
+        :class:`DeletionError` with path:lineno, never a bare
+        UnicodeDecodeError.
+        """
         if not self.journal_path.exists():
             return []
         tombstones = []
-        for lineno, line in enumerate(
-            self.journal_path.read_text(encoding="utf-8").splitlines(), 1
-        ):
+        raw = self.journal_path.read_bytes()
+        for lineno, line in enumerate(raw.splitlines(), 1):
             if not line.strip():
                 continue
             try:
-                tomb = json.loads(line)
+                text = line.decode("utf-8")
+            except UnicodeDecodeError as err:
+                raise DeletionError(
+                    f"corrupt tombstone journal {self.journal_path}:{lineno}: "
+                    f"invalid UTF-8: {err}"
+                ) from err
+            try:
+                tomb = json.loads(text)
             except json.JSONDecodeError as err:
                 raise DeletionError(
                     f"corrupt tombstone journal {self.journal_path}:{lineno}: {err}"
@@ -447,7 +506,13 @@ class L1DeletionService:
 
         Idempotent: when the target is already gone and a receipt exists
         that still verifies against current state, that receipt is returned
-        without writing anything new.
+        without writing anything new. If the existing receipt fails
+        verification SOLELY because known removals grew past its
+        accounting (recovery-log / evidence growth), a fresh receipt is
+        re-issued instead, superseding the old one (SPEC 1.2.2) — repeated
+        retries without new removals then return that chain tail unchanged.
+        Failures from any other cause still raise
+        :class:`DeletionIncompleteError`.
 
         ``derived_artifacts`` from the caller are unioned into the journal
         tombstone; ``reason`` is only used when no tombstone for this target
@@ -546,18 +611,29 @@ class L1DeletionService:
             raise UnknownTargetError(
                 f"target {target_id!r} not present in bundle {bundle_id!r}"
             )
+        tombstone = _merge_tombstones(journal_entries)[0]
         existing = self._latest_receipt(target_id)
         if existing is not None:
             check = self.verify_receipt(existing)
-            if not check["ok"]:
-                raise DeletionIncompleteError(
-                    f"existing receipt for {target_id!r} does not verify "
-                    f"against current state: {check['problems']}"
+            if check["ok"]:
+                return existing
+            if _is_growth_underreport(check["problems"]) and (
+                self._underreport_due_to_growth(existing)
+            ):
+                # SPEC 1.2.2 / RFC Q5: the only healing path. The receipt
+                # under-reports because known removals grew (recover() log
+                # and/or evidence) — re-issue a fresh receipt naming every
+                # known removal, superseding the old one, instead of
+                # raising. Any other failure stays DeletionIncompleteError.
+                return self._reissue_receipt(
+                    bundle_id, target_id, existing, tombstone, now=now
                 )
-            return existing
+            raise DeletionIncompleteError(
+                f"existing receipt for {target_id!r} does not verify "
+                f"against current state: {check['problems']}"
+            )
         # Crash between manifest rewrite and receipt: the evidence written
         # before the rewrite lets us issue an honest receipt now.
-        tombstone = _merge_tombstones(journal_entries)[0]
         tombstone_digest = canonical_sha256(tombstone)
         removed = self._removed_from_evidence(
             self._read_evidence(target_id), tombstone_digest
@@ -568,6 +644,63 @@ class L1DeletionService:
                 "recorded; refusing to issue a receipt"
             )
         return self._write_receipt(bundle_id, tombstone, removed, now=now)
+
+    def _underreport_due_to_growth(self, receipt):
+        """Precise re-issue predicate (SPEC 1.2.2): the receipt names a
+        strict subset of the removals durably recorded for its tombstone
+        digest plus the recovery log, and invents nothing. Paired with
+        :func:`_is_growth_underreport` (which whitelists the failure
+        messages), this refuses to re-issue over tampering or broken
+        chains — those stay :class:`DeletionIncompleteError`."""
+        body = receipt["receipt"]
+        recorded = {
+            (entry["record_id"], entry["digest"])
+            for entry in self._read_evidence(body["target_id"])["removals"]
+            if entry["tombstone_digest"] == body["tombstone_digest"]
+        }
+        claimed = {
+            (record["id"], record["digest"]) for record in body["removed_records"]
+        }
+        recovered = {
+            (entry["record_id"], entry["digest"])
+            for entry in self.recovery_removals(body["target_id"])
+        }
+        known = recorded | recovered
+        return claimed <= known and known > claimed
+
+    def _reissue_receipt(self, bundle_id, target_id, old_receipt, tombstone, *, now=None):
+        """Write a fresh receipt superseding ``old_receipt`` (SPEC 1.2.2).
+
+        The new receipt names EVERY removal known to the service root for
+        this target — delete-time evidence bound to the journal tombstone
+        digest plus the recovery log — and its ``supersedes`` is the old
+        receipt's ``integrity.digest``. The old receipt file is never
+        touched: receipts are immutable and supersession is append-only.
+        """
+        tombstone_digest = canonical_sha256(tombstone)
+        recorded = {
+            (entry["record_id"], entry["digest"])
+            for entry in self._read_evidence(target_id)["removals"]
+            if entry["tombstone_digest"] == tombstone_digest
+        }
+        recovered = {
+            (entry["record_id"], entry["digest"])
+            for entry in self.recovery_removals(target_id)
+        }
+        removed = [
+            {"id": record_id, "integrity": {"digest": digest}}
+            for record_id, digest in sorted(recorded | recovered)
+        ]
+        receipt = build_receipt(
+            bundle_id,
+            tombstone,
+            removed,
+            issued_at=now or self._clock(),
+            supersedes=old_receipt["integrity"]["digest"],
+        )
+        path = self.receipts_dir / f"{receipt['receipt']['id']}.json"
+        _atomic_write(path, canonical_bytes(receipt))
+        return receipt
 
     def _write_receipt(self, bundle_id, tombstone, removed_records, *, now=None):
         receipt = build_receipt(
@@ -583,14 +716,27 @@ class L1DeletionService:
         return sorted(self.receipts_dir.glob("*.json"))
 
     def _latest_receipt(self, target_id, bundle_id=None):
-        """Latest receipt for ``target_id`` (optionally scoped to a bundle)."""
+        """Chain-tail receipt for ``target_id`` (SPEC 1.2.2).
+
+        A receipt that has been superseded by another on-disk receipt is a
+        stale under-report and is never returned: among this target's
+        receipts the only meaningful verification entry point is the chain
+        TAIL — the newest receipt no other receipt supersedes. Falls back
+        to plain ``(issued_at, id)`` order only if every candidate is
+        claimed as superseded (a broken chain then surfaces through
+        :meth:`verify_receipt` as :class:`DeletionIncompleteError`).
+        """
         found = []
+        superseded_digests = set()
         for path in self.receipt_paths():
             try:
                 receipt = json.loads(path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 continue
             body = receipt.get("receipt", {})
+            link = body.get("supersedes")
+            if isinstance(link, str):
+                superseded_digests.add(link)
             if body.get("target_id") != target_id:
                 continue
             if bundle_id is not None and body.get("bundle_id") != bundle_id:
@@ -598,8 +744,14 @@ class L1DeletionService:
             found.append(receipt)
         if not found:
             return None
-        found.sort(key=lambda r: (r["receipt"]["issued_at"], r["receipt"]["id"]))
-        return found[-1]
+        tails = [
+            receipt
+            for receipt in found
+            if receipt["integrity"]["digest"] not in superseded_digests
+        ]
+        pool = tails or found
+        pool.sort(key=lambda r: (r["receipt"]["issued_at"], r["receipt"]["id"]))
+        return pool[-1]
 
     # -- recovery ---------------------------------------------------------
     def recover(self):
@@ -647,6 +799,30 @@ class L1DeletionService:
         return sorted(set(removed))
 
     # -- verification -----------------------------------------------------
+    def _chain_index(self):
+        """Parse every on-disk receipt into chain links.
+
+        Returns ``(by_digest, superseding)`` where ``by_digest`` maps each
+        artifact's ``integrity.digest`` field to its parsed receipt, and
+        ``superseding`` maps a ``supersedes`` link value to the list of
+        artifacts claiming it. Unreadable files are skipped — they can
+        neither serve as chain links nor be verified themselves.
+        """
+        by_digest = {}
+        superseding = {}
+        for path in self.receipt_paths():
+            try:
+                artifact = json.loads(path.read_text(encoding="utf-8"))
+                body = artifact["receipt"]
+                digest = artifact["integrity"]["digest"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+            by_digest.setdefault(digest, artifact)
+            link = body.get("supersedes")
+            if isinstance(link, str):
+                superseding.setdefault(link, []).append(artifact)
+        return by_digest, superseding
+
     def verify_receipt(self, receipt):
         """Check a receipt artifact against durable service state.
 
@@ -656,11 +832,22 @@ class L1DeletionService:
         ``deleted_at``, ``reason`` and ``derived_artifacts`` are bound to
         durable evidence rather than to the receipt itself),
         ``removed_records`` vs the recorded removal evidence (per-target
-        digests written before the manifest rewrite) and vs the recovery
+        digests written before the manifest rewrite) UNION the recovery
         log (digests removed later by :meth:`recover` — semantics (i), see
         module docstring: every removal known to the service root must be
-        accounted for in ``removed_records``), and absence of the target
-        from every bundle under the service root.
+        accounted for in ``removed_records``), absence of the target from
+        every bundle under the service root, and — for re-issued receipts —
+        the supersession chain (SPEC 1.2.2).
+
+        Supersession chain semantics: ``ok: True`` is possible ONLY for the
+        chain TAIL. Every ``supersedes`` link must resolve to a real,
+        digest-matching, same-target receipt on disk (a link to a missing
+        or digest-mismatched receipt is a broken chain); a revisited digest
+        during the walk is a circular chain (runtime check by design —
+        JSON Schema cannot express graph constraints). A receipt that has
+        been superseded verifies ``ok: False`` no matter what its own
+        accounting says — superseding never retroactively launders a stale
+        receipt, and a non-tail receipt verified alone is an under-report.
         """
         if isinstance(receipt, (str, os.PathLike)):
             receipt = json.loads(Path(receipt).read_text(encoding="utf-8"))
@@ -671,7 +858,8 @@ class L1DeletionService:
             return {"ok": False, "problems": [str(err)], "receipt_id": None}
 
         body = receipt["receipt"]
-        if canonical_sha256(body) != receipt["integrity"]["digest"]:
+        receipt_digest = receipt["integrity"]["digest"]
+        if canonical_sha256(body) != receipt_digest:
             problems.append("receipt digest does not match its body (tampered)")
 
         # The receipt's own claims must be internally consistent...
@@ -682,6 +870,58 @@ class L1DeletionService:
         if body["derived_artifacts"] != body["tombstone"]["derived_artifacts"]:
             problems.append(
                 "receipt derived_artifacts do not match the embedded tombstone"
+            )
+
+        # Supersession chain (SPEC 1.2.2): walk every supersedes link from
+        # this receipt to the chain origin. The visited check comes FIRST
+        # at each step — a revisited digest is a cycle even if the
+        # revisiting link's target were inconsistent (a self-consistent
+        # cycle is cryptographically infeasible anyway, so this branch is
+        # defense against hand-crafted garbage chains).
+        by_digest, superseding = self._chain_index()
+        visited = {receipt_digest}
+        current = body
+        while "supersedes" in current:
+            link = current["supersedes"]
+            if link in visited:
+                problems.append(
+                    f"circular supersession chain detected at digest {link} "
+                    "(supersession chains must be acyclic)"
+                )
+                break
+            visited.add(link)
+            linked = by_digest.get(link)
+            if linked is None:
+                problems.append(
+                    f"broken supersession chain: no on-disk receipt has "
+                    f"digest {link}"
+                )
+                break
+            linked_body = linked["receipt"]
+            if canonical_sha256(linked_body) != link:
+                problems.append(
+                    "broken supersession chain: the receipt named by "
+                    "supersedes does not match its own digest (tampered link)"
+                )
+                break
+            if linked_body.get("target_id") != body["target_id"]:
+                problems.append("supersession chain crosses target ids")
+                break
+            current = linked_body
+
+        # Tail position: a receipt some other receipt supersedes is a stale
+        # under-report and can never be an ok verification entry point.
+        successors = [
+            artifact
+            for artifact in superseding.get(receipt_digest, [])
+            if artifact["integrity"]["digest"] != receipt_digest
+        ]
+        if successors:
+            problems.append(
+                f"receipt has been superseded by "
+                f"{successors[0]['receipt'].get('id')!r}; a superseded receipt "
+                "verified alone is a stale under-report — verify the chain "
+                "tail instead"
             )
 
         # ...and must be bound to the durable journal, not merely present in it.
@@ -703,49 +943,50 @@ class L1DeletionService:
                     "(deleted_at/reason/derived_artifacts)"
                 )
 
-        # removed_records must match what was durably recorded at delete time.
+        # Semantics (i): ok=True means the receipt accounts for EVERY
+        # removal of this target known to the service root. Known removals
+        # = the delete-time evidence bound to this receipt's tombstone
+        # digest UNION the recovery log (copies removed later by recover()).
+        # A chain-tail receipt re-issued under SPEC 1.2.2 names the union;
+        # any other receipt must name exactly the delete-time evidence and
+        # every recovery entry it does not name is an under-report problem.
+        try:
+            recovered = self._read_recovery()
+        except DeletionError as err:
+            recovered = None
+            problems.append(f"recovery log unreadable: {err}")
+        recovered_pairs = set()
+        if recovered is not None:
+            recovered_pairs = {
+                (entry["record_id"], entry["digest"])
+                for entry in recovered
+                if entry["target_id"] == body["target_id"]
+            }
         try:
             evidence = self._read_evidence(body["target_id"])
         except DeletionError as err:
             evidence = None
             problems.append(f"removal evidence unreadable: {err}")
         if evidence is not None:
-            recorded = sorted(
+            recorded = {
                 (entry["record_id"], entry["digest"])
                 for entry in evidence["removals"]
                 if entry["tombstone_digest"] == body["tombstone_digest"]
-            )
-            claimed = sorted(
-                (record["id"], record["digest"]) for record in body["removed_records"]
-            )
-            if recorded != claimed:
+            }
+            claimed = {
+                (record["id"], record["digest"])
+                for record in body["removed_records"]
+            }
+            if recorded - claimed or (claimed - recorded) - recovered_pairs:
                 problems.append(
                     "removed_records do not match recorded deletion evidence"
                 )
-
-        # Semantics (i): ok=True means the receipt accounts for EVERY
-        # removal of this target known to the service root. Copies removed
-        # later by recover() are recorded in the recovery log; a receipt
-        # that does not name them under-reports and must not verify ok.
-        try:
-            recovered = self._read_recovery()
-        except DeletionError as err:
-            recovered = None
-            problems.append(f"recovery log unreadable: {err}")
         if recovered is not None:
             claimed_pairs = {
                 (record["id"], record["digest"])
                 for record in body["removed_records"]
             }
-            unreported = sorted(
-                {
-                    (entry["record_id"], entry["digest"])
-                    for entry in recovered
-                    if entry["target_id"] == body["target_id"]
-                    and (entry["record_id"], entry["digest"]) not in claimed_pairs
-                }
-            )
-            for record_id, digest in unreported:
+            for record_id, digest in sorted(recovered_pairs - claimed_pairs):
                 problems.append(
                     f"recovery removed digest {digest} of target {record_id!r} "
                     "that the receipt does not report (receipt under-reports "

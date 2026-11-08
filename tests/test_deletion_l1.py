@@ -9,6 +9,7 @@ from m2_helpers import DELETED_AT, IMPORTED_AT
 import mbcp.deletion as deletion_module
 
 from mbcp import (
+    DeletionError,
     DeletionIncompleteError,
     L1DeletionService,
     UnknownTargetError,
@@ -707,3 +708,22 @@ def test_recovered_digest_matching_receipt_claim_does_not_fail():
         service.put_bundle(original)  # exact same digest as at delete time
         assert service.recover() == ["rec-002"]
         assert service.verify_receipt(receipt)["ok"] is True
+
+
+def test_journal_tombstones_invalid_utf8_raises_typed_error():
+    # M3 round-2 verify advisory 2, mirrored into the L1 reader: the
+    # tombstone journal is decoded explicitly per line; invalid UTF-8
+    # raises the typed DeletionError with path:lineno, never a bare
+    # UnicodeDecodeError.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        with open(service.journal_path, "ab") as fh:
+            fh.write(b"\xff\xfe\x00not-utf8\n")
+        try:
+            service.journal_tombstones()
+        except DeletionError as err:
+            assert "tombstones.jsonl" in str(err)
+            assert "invalid UTF-8" in str(err)
+        else:
+            raise AssertionError("expected DeletionError")

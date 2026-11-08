@@ -32,6 +32,7 @@ from mbcp import (
     ACK_LIMITATIONS,
     L1DeletionService,
     PackValidationError,
+    PropagationError,
     PropagationJournalError,
     build_bundle,
     canonical_bytes,
@@ -406,6 +407,91 @@ def test_corrupt_propagation_journal_raises_typed_error():
             assert "propagation.jsonl" in str(err)
         else:
             raise AssertionError("expected PropagationJournalError")
+
+
+def test_propagation_journal_is_attempts_audit_one_line_per_intake():
+    # BACKLOG M3 round-2 advisory 1 (PIN, not a bug): propagation.jsonl is
+    # an ATTEMPTS AUDIT — every successful intake, INCLUDING an idempotent
+    # no-op re-import that applied nothing, appends exactly one acked line.
+    # Growth per re-import is the specified behaviour; a future dedupe
+    # refactor must change this test deliberately, not silently.
+    with tempfile.TemporaryDirectory() as tmp:
+        pack = _pack(tmp)
+        dest = _dest_service(tmp)
+        import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
+        import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
+        entries = read_propagation_journal(dest.root)
+    assert len(entries) == 2
+    assert entries[0] == entries[1]
+    assert all(e["status"] == "acked" for e in entries)
+
+
+def test_propagation_journal_invalid_utf8_raises_typed_error():
+    # BACKLOG M3 round-2 advisory 2: bytes are decoded explicitly per line;
+    # invalid UTF-8 raises the typed error with path:lineno, never a bare
+    # UnicodeDecodeError.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = _dest_service(tmp)
+        record_pending_propagation(
+            dest.root, pack_digest="ef" * 32, source_root=SOURCE_ROOT_ID,
+            now=IMPORTED_AT,
+        )
+        path = dest.root / "propagation.jsonl"
+        with open(path, "ab") as fh:
+            fh.write(b"\xff\xfe\x00not-utf8\n")
+        try:
+            read_propagation_journal(dest.root)
+        except PropagationJournalError as err:
+            assert "propagation.jsonl" in str(err)
+            assert "invalid UTF-8" in str(err)
+        else:
+            raise AssertionError("expected PropagationJournalError")
+
+
+def test_noop_reimport_tampered_ack_is_reissued_not_returned():
+    # BACKLOG M3 round-2 advisory 3: the no-op re-import read-back must not
+    # return a tampered ack. The on-disk artifact's integrity.digest is
+    # re-checked; a mismatch means the ack is re-issued from state (which
+    # is idempotent — same content, correct integrity) and the tampered
+    # bytes are overwritten.
+    with tempfile.TemporaryDirectory() as tmp:
+        pack = _pack(tmp)
+        dest = _dest_service(tmp)
+        ack1 = import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
+        ack_path = (
+            dest.root / "propagation" / "acks"
+            / f"{pack['pack']['pack_digest'][:16]}.json"
+        )
+        tampered = json.loads(ack_path.read_text(encoding="utf-8"))
+        tampered["ack"]["imported_at"] = "2031-01-01T00:00:00Z"
+        ack_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+        ack2 = import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
+
+        assert ack2 == ack1
+        assert ack2["ack"]["imported_at"] == IMPORTED_AT
+        assert ack2["integrity"]["digest"] == canonical_sha256(ack2["ack"])
+        assert json.loads(ack_path.read_text(encoding="utf-8")) == ack1
+
+
+def test_noop_reimport_corrupt_ack_raises_typed_error():
+    # Advisory 3, corrupt case: an unparseable ack artifact raises the
+    # typed PropagationError naming the path — never a bare JSONDecodeError.
+    with tempfile.TemporaryDirectory() as tmp:
+        pack = _pack(tmp)
+        dest = _dest_service(tmp)
+        import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
+        ack_path = (
+            dest.root / "propagation" / "acks"
+            / f"{pack['pack']['pack_digest'][:16]}.json"
+        )
+        ack_path.write_text("{not json", encoding="utf-8")
+        try:
+            import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
+        except PropagationError as err:
+            assert "corrupt ack artifact" in str(err)
+        else:
+            raise AssertionError("expected PropagationError")
 
 
 # -- honesty: the ack must not overclaim ---------------------------------------

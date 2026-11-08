@@ -90,6 +90,11 @@
             }
           }
         },
+        "supersedes": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "receipt_digest (integrity.digest) of the receipt this receipt supersedes. Format check only: chain existence/digest-match/acyclicity are runtime verify_receipt checks — JSON Schema cannot express graph constraints (SPEC 1.2.2)."
+        },
         "limitations": {
           "type": "array",
           "minItems": 1,
