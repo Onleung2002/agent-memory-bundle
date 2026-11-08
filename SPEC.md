@@ -47,6 +47,10 @@ load_policy:
 ### 1.2.1 L1 已知限制（v0.1）
 L1 receipt 係 immutable artifact——`recover()` 移除咗 receipt 未報告嘅 digest 之後，該 target 嘅在冇 receipt 永遠無法通過 `verify_receipt`（fail-closed，唔會出假 ok），且冇 re-issuance/healing path；re-issuance 語意（supersession）與 L2 跨 bundle propagation 一併設計。
 
+
+### 1.2.2 Receipt supersession（v0.1）
+`deletion-receipt.v0` 加 optional `supersedes`（被取代 receipt 嘅 `receipt_digest`，hex64）。Supersession 只有一個觸發位：`delete()` retry 喺 under-report 狀態（`verify_receipt ok:false` 因 evidence/recovery 增長）自動 re-issue 新 receipt 並指向舊 receipt。`verify_receipt` 對 superseded receipt：chain 完整（每個 supersedes 指向真實存在且 digest 相符嘅 receipt）而 chain 尾 receipt accounting 覆蓋全部已知 removal → `ok:true`；chain 斷裂（指向唔存在/mismatch 嘅 receipt）→ `ok:false`。Receipt 仍然 immutable——re-issue 係寫新 receipt，唔係改舊 receipt。
+
 ### 1.3 consent 繼承（UMP）+ 跨 profile 一致
 UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：consent 違反 = conformance fail（唔係 warning）。
 
@@ -55,7 +59,6 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 - **值原樣保留（verbatim）**：user strings——包括 RFC3339 timestamps 嘅 sub-second precision 同 UTC offset——一律唔改寫。Canonicalization 只 normalize **結構**；`json.loads(canonical_bytes(x)) == x` 對所有 conforming values 成立（parse-back equality，有測試）。Timestamp 改寫會摧毀事件次序資訊，屬 lossy，禁止。
 - **字串編碼**：canonical JSON 直接輸出 UTF-8 字元（`ensure_ascii=false` 語意），非 ASCII 字元唔做 `\uXXXX` escape。兩種編碼都係合法 JSON 但 digest 唔同——跨實作 digest 對帳（L2/L4）以本句為準。
 - Manifest 排序嘅 content-digest tiebreak 用呢個 canonical form 嘅 SHA-256。
-
 ### 1.5 Load-time validation（SC-SCHEMA）
 `load()` 對 input 做**結構性**驗證：
 - **Unknown extra fields → passthrough retained**（P3 unknown-field retention）：record 任何額外欄位原樣保留喺輸出。
