@@ -33,7 +33,7 @@ load_policy:
 - tombstone = monotonic record：target id、timestamp、reason、衍生 artifact 清單（facts/edges/chunks/embedding-cache keys）。
 - Importers MUST tombstone-first（先刪後加），令 stale bundle 不能復活已刪內容。
 - **Load path 同樣 enforce**：`load()` 必先收集所有 input bundles 嘅 tombstones，任何被 target 嘅 record 唔會出現喺結果——stale bundle 喺 load 階段都唔可以復活已刪內容。`lifecycle: "deleted"` 嘅 records 同樣被 filter（`archived` 保留）。
-- **`lifecycle: "deleted"` 係 id-wide 刪除訊號**（v0.1 precision pass 收緊）：load path 對 `lifecycle:"deleted"` 嘅處理同 tombstone 同等——凡任何 input bundle 入面存在 `lifecycle:"deleted"` 嘅 copy，該 id 喺**所有** bundles 嘅 active copies 都唔會載入（唔止嗰個 copy 本身）。收緊理由：per-record filter 令「同 id 另一 bundle active」成為復活路徑。`archived` 唔受影響。
+- **`lifecycle: "deleted"` 係 id-wide 刪除訊號**（v0.1 precision pass 收緊）：load path 對 `lifecycle:"deleted"` 嘅處理同 tombstone 同等——凡任何 input bundle 入面存在 `lifecycle:"deleted"` 嘅 copy，該 id 喺**所有** bundles 嘅 active copies 都唔會載入（唔止嗰個 copy 本身）。收緊理由：per-record filter 令「同 id 另一 bundle active」成為復活路徑。`archived` 唔係刪除訊號；被 deleted id 嘅 archived copies 一樣被排除，同 tombstone。
 - **Tombstone dedupe**：同一 `target_id` 多個 tombstones → `deleted_at`/`reason` 取最新者，但 `derived_artifacts` 取**全部 copies 嘅 sorted UNION**（L3 證據唔可以因 merge 而縮水）。
 - **`deleted_at` 比較**：dedupe 嘅新舊判斷按 RFC3339 instant（timezone-aware datetime）比較，唔係字串比較——`2026-06-01T00:00:00+08:00` 晚於同刻嘅 `Z` 表示。無法 parse 嘅 `deleted_at` → `LoadValidationError`。
 - **Dedupe tie**：多個 tombstone `deleted_at` 相同時，canonical SHA-256 最大者勝（order-independent，同 manifest 排序嘅 content-digest tiebreak 原則一致）。
