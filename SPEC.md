@@ -37,6 +37,9 @@ load_policy:
 - **Tombstone dedupe**：同一 `target_id` 多個 tombstones → `deleted_at`/`reason` 取最新者，但 `derived_artifacts` 取**全部 copies 嘅 sorted UNION**（L3 證據唔可以因 merge 而縮水）。
 - **`deleted_at` 比較**：dedupe 嘅新舊判斷按 RFC3339 instant（timezone-aware datetime）比較，唔係字串比較——`2026-06-01T00:00:00+08:00` 晚於同刻嘅 `Z` 表示。無法 parse 嘅 `deleted_at` → `LoadValidationError`。
 - **Dedupe tie**：多個 tombstone `deleted_at` 相同時，canonical SHA-256 最大者勝（order-independent，同 manifest 排序嘅 content-digest tiebreak 原則一致）。
+- **寫入邊界同樣 enforce（v0.1 audit 收緊）**：`put_bundle`/`import_bundle` 對任何 `(id, integrity.digest)` 已被 tombstone journal 針對嘅 record copy **拒收**（typed error）——復活後門喺 ingest path 封死，「cannot resurrect」唔止係 load path 契約，亦係寫入契約。
+- **`lifecycle: "deleted"` 訊號嘅 integrity 前提（v0.1 audit 收緊，取代早前「signal survives digest-drop」讀法）**：id-wide 刪除訊號只由**通過 integrity digest 驗證**嘅 `lifecycle:"deleted"` copy 產生；digest 驗證失敗嘅 copy 唔產生訊號（fail-closed 方向改為「刪除訊號必須 authentic」——未認證刪除通道收緊，audit §10）。
+- **Duplicate tiebreak（v0.1 audit 收緊）**：同一 id 多個 active copies 而無 merge mode 宣告時，winner = **canonical SHA-256 較大者**（order-independent，同 manifest 排序/tombstone dedupe 嘅 content-digest tiebreak 同一哲學）；取代「bundle id 字典序 first-wins」（attacker 可揀 bundle 名令 stale copy 勝出）。merge mode 宣告仍優先於 tiebreak。
 - **Import 對 store 嘅刪除**：`import_bundle` 嘅 tombstone-first「先刪後加」涵蓋兩邊——store 既有 records 中任何被（store 或 incoming）tombstone 針對嘅 id 一併移除，incoming records 先加入。跨 root propagation 嘅正確性建喺呢個語意上。
 - 刪除等級 L1–L4：
   - L1 bundle 內刪除（本 bundle 再無該記錄）
@@ -64,6 +67,8 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 - **Unknown extra fields → passthrough retained**（P3 unknown-field retention）：record 任何額外欄位原樣保留喺輸出。
 - **Malformed structure → `LoadValidationError`**（唔係 KeyError/TypeError）：缺 required fields、類型錯、enum 值唔合法、`integrity.digest` 唔係 64 位小寫 hex，一律 reject。
 - **Build path manifest 必填**：`build_bundle`/`validate_bundle`（build path）要求 manifest 帶齊 `bundle`、`mbcp_version`、`records`、`tombstones` 四個 keys（缺 key = build-path error；空 array 合法）。Load path 保持 tolerant reader（缺 key 容忍成空 list，P3）——不對稱係明文設計，唔係遺漏。
+- **`load_policy.max_chars` 最少 1（v0.1 audit 收緊）**：0 會清零整個 priority class（一條 hostile record 靜默滅掉所有 critical 記憶，availability 攻擊面）。Build path 拒收 0/負值；load path 同樣拒收（`LoadValidationError`）——兩邊都堵，唔靠 producer 自律。
+- **Id grammar（v0.1 audit 收緊，涵蓋 record id）**：`record.id` 與 `bundle.id` 同一 grammar——`^[A-Za-z0-9._-]{1,128}$`（bundle 64 / record 128；`..` 拒收）。**所有 id 比對前先 Unicode NFC normalize**（tombstone `target_id` vs record id、duplicate resolution）——NFD 變體唔可以繞過 tombstone filter；id 儲存仍然 verbatim（normalize 係比對語意，唔係改寫）。大小寫變體（`Rec-1` vs `rec-1`）grammar 仍然容許、NFC 唔處理——已知殘餘，記 BACKLOG。
 - 嚴格 schema validation（`additionalProperties: false`）只用於 **build path**（`build_bundle`/`validate_*`）；load path 係 tolerant reader。
 
 ### 1.6 Integrity digest（SC-INT）
@@ -73,6 +78,8 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 - v0.1 digest-drop 為靜默；v0.2 起 `load()` 回傳值附 dropped-ids 通道（見 §3a）。
 
 ## 2. Conformance 等級（MBCP 層）
+
+> **v0.1 audit 收緊註記（2026-11-08，Isaac 批準）**：propagation pack 嘅 `pack_digest` 計入 `source_root`（唔只 tombstone digest list）——唔同 source root 嘅同一 tombstone set 係唔同 pack、唔可以撞同一 ack（audit §7）。schema `propagation-pack.v0` 同步。
 
 | 級 | 要求 |
 |---|---|
