@@ -45,7 +45,7 @@ from mbcp import (
     make_tombstone,
 )
 
-from syn import FIXED_TS, assert_raises
+from syn import FIXED_TS, assert_raises, write_bundle_direct
 
 
 def _service(tmp):
@@ -68,11 +68,18 @@ def _service(tmp):
 
 def _grow_recovery(service, variant="STALE variant"):
     """Re-introduce rec-002 with a NOVEL digest and recover() it, so the
-    recovery log records a removal the original receipt does not name."""
+    recovery log records a removal the original receipt does not name.
+
+    UPDATED-PIN (M4 round C1, SPEC 1.2 write boundary): the resurrected
+    copy lands OUT-OF-BAND (another producer writing bundles/ directly) —
+    put_bundle now rejects any copy of a journal-tombstoned id. The
+    supersession machinery being pinned is unchanged: recover() and the
+    re-issue trigger heal exactly this legacy/attack state.
+    """
     stale = make_record(
         "rec-002", "fact", variant, OWNER, created=FIXED_TS
     )
-    service.put_bundle(build_bundle("bundle-stale", records=[stale]))
+    write_bundle_direct(service, build_bundle("bundle-stale", records=[stale]))
     assert service.recover() == ["rec-002"]
     return stale["integrity"]["digest"]
 
@@ -358,11 +365,18 @@ def test_reissued_receipt_rebinds_journal_and_evidence():
 
 
 def _resurrect_same_bundle(service, record, bundle_id="bundle-alpha"):
-    """Put a (resurrected) copy of the target back into a live bundle via
-    put_bundle ALONE — no delete(), no recover() (the ATK2/ATK3 floor)."""
+    """Put a (resurrected) copy of the target back into a live bundle
+    OUT-OF-BAND — no delete(), no recover() (the ATK2/ATK3 floor).
+
+    UPDATED-PIN (M4 round C1, SPEC 1.2 write boundary): put_bundle now
+    refuses tombstoned-id copies, so the resurrection that ATK2/ATK3 model
+    lands through the documented bypass channel (a producer writing
+    bundles/ directly). The pinned contract is unchanged: no receipt can
+    stay ok:True while its target is live anywhere under the root.
+    """
     manifest = service.get_bundle(bundle_id)
     manifest["records"] = list(manifest.get("records", [])) + [record]
-    service.put_bundle(manifest)
+    write_bundle_direct(service, manifest)
 
 
 def _ok_true_receipts(service):
@@ -410,9 +424,11 @@ def test_atk1_stale_gate_retry_reissues_superseding_receipt():
 
 def test_atk2_put_bundle_resurrection_fails_receipt_closed():
     # ATK2 (fail-closed floor): delete issues an ok:True receipt; a copy
-    # of the target put back via put_bundle ALONE (no delete, no recover)
-    # must flip that receipt to ok:False — no receipt can stay ok:True
-    # while its target is live anywhere under the service root.
+    # of the target put back OUT-OF-BAND (no delete, no recover — since
+    # M4 round C1 the write boundary refuses it at the API, so the only
+    # channel left is a producer writing bundles/ directly) must flip
+    # that receipt to ok:False — no receipt can stay ok:True while its
+    # target is live anywhere under the service root.
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp)
         receipt = service.delete("bundle-alpha", "rec-002", "synthetic erasure")

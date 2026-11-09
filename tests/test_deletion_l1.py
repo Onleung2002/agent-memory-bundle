@@ -12,6 +12,7 @@ from mbcp import (
     DeletionError,
     DeletionIncompleteError,
     L1DeletionService,
+    TombstonedIdRejectedError,
     UnknownTargetError,
     build_bundle,
     canonical_bytes,
@@ -21,7 +22,7 @@ from mbcp import (
     make_tombstone,
 )
 
-from syn import FIXED_TS, OWNER, assert_raises
+from syn import FIXED_TS, OWNER, assert_raises, write_bundle_direct
 
 
 def _manifest():
@@ -45,6 +46,66 @@ def test_put_bundle_roundtrips_canonical_bytes():
         path = service.bundle_path("bundle-alpha")
         assert path.read_bytes() == canonical_bytes(_manifest())
         assert service.get_bundle("bundle-alpha") == _manifest()
+
+
+# ---------------------------------------------------------------------------
+# Write boundary (SPEC 1.2, v0.1 audit §6, M4 round C1): put_bundle refuses
+# ANY copy of a journal-tombstoned id — id-level, regardless of digest.
+# ---------------------------------------------------------------------------
+
+
+def test_put_bundle_rejects_any_copy_of_tombstoned_id():
+    # audit §6 probe: delete id X -> put_bundle any copy of X -> typed
+    # rejection naming the id. Both the exact delete-time digest and a
+    # NOVEL digest are refused — the tombstone kills the id, not a digest.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+
+        same_digest = _manifest()  # rec-002 with its delete-time digest
+        assert_raises(
+            TombstonedIdRejectedError, service.put_bundle, same_digest
+        )
+        novel = build_bundle(
+            "bundle-novel",
+            records=[
+                make_record(
+                    "rec-002", "fact", "novel stale copy", OWNER,
+                    created=FIXED_TS,
+                )
+            ],
+        )
+        assert_raises(TombstonedIdRejectedError, service.put_bundle, novel)
+        try:
+            service.put_bundle(novel)
+        except TombstonedIdRejectedError as err:
+            assert "rec-002" in str(err)  # the error names the id
+        else:
+            raise AssertionError("expected TombstonedIdRejectedError")
+        # nothing was written
+        assert not (service.bundles_dir / "bundle-novel.json").exists()
+
+
+def test_put_bundle_still_accepts_untombstoned_ids_after_delete():
+    # audit §6 probe, control: a DIFFERENT id is still accepted.
+    with tempfile.TemporaryDirectory() as tmp:
+        service = _service(tmp)
+        service.delete("bundle-alpha", "rec-002", "synthetic erasure")
+        other = build_bundle(
+            "bundle-other",
+            records=[
+                make_record("rec-009", "fact", "unrelated", OWNER,
+                            created=FIXED_TS)
+            ],
+        )
+        service.put_bundle(other)
+        assert service.get_bundle("bundle-other") == other
+
+
+# (NFC-normalization pins for the write boundary live in test_tombstone.py:
+# grammar-valid ids are pure ASCII, where NFC is the identity, so the NFD
+# attack surface is pinned through apply_tombstones/import_bundle, which
+# compare tombstone target_ids against record ids without a grammar gate.)
 
 
 def test_delete_removes_only_target_record():
@@ -187,7 +248,9 @@ def test_receipt_fails_if_target_record_still_present():
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp)
         receipt = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
-        service.put_bundle(_manifest())  # stale copy restored, journal untouched
+        # UPDATED-PIN (M4 round C1, SPEC 1.2 write boundary): the stale
+        # copy now lands out-of-band — put_bundle rejects tombstoned ids.
+        write_bundle_direct(service, _manifest())  # stale copy restored, journal untouched
         result = service.verify_receipt(receipt)
         assert result["ok"] is False
         assert any("still present" in problem for problem in result["problems"])
@@ -547,7 +610,7 @@ def test_delete_heals_resurrected_record_via_supersession():
         first = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
         first_file = service.receipts_dir / f"{first['receipt']['id']}.json"
         first_bytes = first_file.read_bytes()
-        service.put_bundle(_manifest())  # stale copy comes back
+        write_bundle_direct(service, _manifest())  # UPDATED-PIN (C1): stale copy comes back OOB
         assert "rec-002" in _ids(service, "bundle-alpha")
 
         second = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
@@ -592,7 +655,9 @@ def test_recover_does_not_launder_underreporting_receipt():
         )
         stale_digest = stale["integrity"]["digest"]
         assert stale_digest != receipt["receipt"]["removed_records"][0]["digest"]
-        service.put_bundle(build_bundle("bundle-stale", records=[stale]))
+        # UPDATED-PIN (M4 round C1): resurrection lands out-of-band
+        # (put_bundle rejects tombstoned ids); recover() still heals.
+        write_bundle_direct(service, build_bundle("bundle-stale", records=[stale]))
 
         failing = service.verify_receipt(receipt)
         assert failing["ok"] is False
@@ -625,7 +690,7 @@ def test_recovery_log_records_every_removed_digest_attributably():
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp)
         service.delete("bundle-alpha", "rec-002", "synthetic erasure")
-        service.put_bundle(_manifest())  # stale copy with the ORIGINAL digest
+        write_bundle_direct(service, _manifest())  # UPDATED-PIN (C1): OOB, original digest back
         assert service.recover() == ["rec-002"]
 
         assert service.recovery_path.exists()
@@ -655,7 +720,7 @@ def test_recovery_log_line_written_before_manifest_rewrite():
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp)
         service.delete("bundle-alpha", "rec-002", "synthetic erasure")
-        service.put_bundle(_manifest())  # stale copy back
+        write_bundle_direct(service, _manifest())  # UPDATED-PIN (C1): OOB, stale copy back
         original_atomic_write = deletion_module._atomic_write
 
         def exploding_atomic_write(path, data):
@@ -687,7 +752,7 @@ def test_recover_remains_idempotent_and_log_stable():
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp)
         service.delete("bundle-alpha", "rec-002", "synthetic erasure")
-        service.put_bundle(_manifest())
+        write_bundle_direct(service, _manifest())  # UPDATED-PIN (C1): OOB
         assert service.recover() == ["rec-002"]
         lines_after_first = service.recovery_path.read_text(encoding="utf-8")
 
@@ -716,7 +781,7 @@ def test_recovered_digest_matching_receipt_claim_does_not_fail():
         service = _service(tmp)
         receipt = service.delete("bundle-alpha", "rec-002", "synthetic erasure")
         original = json.loads(json.dumps(_manifest()))
-        service.put_bundle(original)  # exact same digest as at delete time
+        write_bundle_direct(service, original)  # UPDATED-PIN (C1): OOB; exact same digest as at delete time
         assert service.recover() == ["rec-002"]
         assert service.verify_receipt(receipt)["ok"] is True
 

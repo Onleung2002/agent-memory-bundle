@@ -100,9 +100,10 @@ from .canonical import (
     canonical_bytes,
     canonical_sha256,
     json_loads_strict,
+    normalize_id,
     utc_now,
 )
-from .tombstone import _merge_tombstones
+from .tombstone import TombstonedIdRejectedError, _merge_tombstones
 
 SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -300,6 +301,13 @@ class L1DeletionService:
     def put_bundle(self, manifest):
         """Validate + atomically persist a manifest; returns its path.
 
+        Write boundary (SPEC 1.2, audit §6): any record copy whose id is
+        already tombstoned in the journal is rejected with the typed
+        :class:`TombstonedIdRejectedError` — id-level, regardless of
+        digest. The deletion service's own flows never re-put a
+        tombstoned id (delete() and recover() rewrite manifests
+        directly), so this gate only bites stale producers.
+
         Audit §4 / §11 gate: hostile-but-parseable manifests (lone
         surrogates, NaN/Infinity, bundle ids outside the grammar) are
         rejected HERE at ingest, loudly and typed — a poison manifest can
@@ -311,6 +319,25 @@ class L1DeletionService:
         overwritten silently.
         """
         validate_bundle(manifest)
+        # Write boundary (SPEC 1.2, v0.1 audit §6 tightening, Isaac ruling
+        # 2026-11-08): the resurrection backdoor is closed at INGEST, not
+        # only at load time. The tombstone kills the whole id, so ANY copy
+        # of a journal-tombstoned id is rejected — id-level, regardless of
+        # the copy's integrity digest — with the typed error naming the
+        # id. Resurrection can then only reach the store out-of-band (a
+        # producer writing bundles/ directly), which is exactly the legacy
+        # threat model delete()/recover() already heal. Both sides of the
+        # comparison are NFC-normalized (SPEC 1.5, audit §12).
+        tombstoned_ids = {
+            normalize_id(t["target_id"]) for t in self.all_tombstones()
+        }
+        for record in manifest["records"]:
+            if normalize_id(record["id"]) in tombstoned_ids:
+                raise TombstonedIdRejectedError(
+                    f"record id {record['id']!r} is tombstoned in the "
+                    "journal; refusing to ingest a copy of a deleted id "
+                    "(SPEC 1.2 write boundary, audit §6)"
+                )
         bundle_id = manifest["bundle"]["id"]
         path = self.bundles_dir / f"{_safe_id(bundle_id)}.json"
         if path.exists():
@@ -981,7 +1008,7 @@ class L1DeletionService:
         journal = _merge_tombstones(self.journal_tombstones())
         if not journal or not self.bundles_dir.exists():
             return []
-        targets = {t["target_id"] for t in journal}
+        targets = {normalize_id(t["target_id"]) for t in journal}
         removed = []
         for path in sorted(self.bundles_dir.glob("*.json")):
             # Fail-closed and typed (audit §11): an unreadable or invalid
@@ -999,14 +1026,20 @@ class L1DeletionService:
                 raise DeletionError(
                     f"invalid bundle manifest {path}: {err}"
                 ) from err
-            stale = [r for r in manifest.get("records", []) if r["id"] in targets]
+            stale = [
+                r
+                for r in manifest.get("records", [])
+                if normalize_id(r["id"]) in targets
+            ]
             changed = bool(stale)
             if stale:
                 for record in stale:
                     self._record_recovery(manifest["bundle"]["id"], record)
                 removed.extend(r["id"] for r in stale)
                 manifest["records"] = [
-                    r for r in manifest.get("records", []) if r["id"] not in targets
+                    r
+                    for r in manifest.get("records", [])
+                    if normalize_id(r["id"]) not in targets
                 ]
             known = {t["target_id"] for t in manifest.get("tombstones", [])}
             for tombstone in journal:

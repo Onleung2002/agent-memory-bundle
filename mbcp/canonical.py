@@ -14,6 +14,7 @@ Canonical form guarantees (SPEC 1.4):
 import hashlib
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone
 
 
@@ -64,6 +65,19 @@ def normalize_timestamp(value):
     dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     dt = dt.astimezone(timezone.utc).replace(microsecond=0)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def normalize_id(text):
+    """Unicode NFC normalization for id COMPARISON (SPEC 1.5, audit §12).
+
+    Comparison semantics only: ids are stored verbatim, never rewritten.
+    Every id comparison (tombstone ``target_id`` vs record id, duplicate
+    resolution, write-boundary rejection sets) normalizes BOTH sides with
+    NFC first, so an NFD variant of an id cannot bypass a tombstone
+    filter. Case variants are NOT folded (``Rec-1`` vs ``rec-1`` stay
+    distinct — a known residual, per SPEC 1.5).
+    """
+    return unicodedata.normalize("NFC", text)
 
 
 def canonical_bytes(obj):

@@ -20,7 +20,9 @@
   "properties": {
     "id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "description": "Record id grammar (SPEC 1.5 v0.1-audit-12 tightening): safe characters only, max 128; '..' is additionally rejected in code (validate_record / check_record_on_load) since the minimal validator has no 'not' keyword. The class additionally permits ':' for the shipped importers' prefixed ids (e.g. 'chatgpt:<conversation-id>') - documented Round C1 judgment call pending an importer id-scheme migration."
     },
     "kind": {
       "type": "string",
@@ -160,7 +162,8 @@
             },
             "max_chars": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 1,
+              "description": "Class budget floor: minimum 1 (SPEC 1.5 v0.1-audit-8 tightening) - 0 would zero out the whole priority class."
             },
             "on_budget_exceed": {
               "enum": [

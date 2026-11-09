@@ -123,3 +123,74 @@ def test_lifecycle_deleted_id_excludes_archived_copy_of_same_id():
         records=[syn_record("rec-x", "deleted copy", lifecycle="deleted")],
     )
     assert load([archived, deleter]) == []
+
+
+# ---------------------------------------------------------------------------
+# Integrity premise (SPEC 1.2, v0.1 audit §10, M4 round C1): the id-wide
+# "deleted" signal is produced ONLY by a lifecycle="deleted" copy that
+# passes its integrity digest check. SUPERSEDES the earlier "signal
+# survives digest-drop" reading (Isaac ruling 2026-11-08): a tampered
+# "deleted" copy produces no signal and drops like any digest-failed
+# record. (No dedicated pinned test of the old reading existed — the old
+# behavior was implicit in the pre-pass ordering — so these are new pins
+# of the superseding semantics, not re-pins.)
+# ---------------------------------------------------------------------------
+
+
+def _digest_failed(record, new_body):
+    copy = dict(record)
+    copy["body"] = new_body  # digest no longer matches the body
+    return copy
+
+
+def test_digest_failed_deleted_copy_produces_no_signal():
+    # digest-failed deleted copy ALONE: nothing is excluded and nothing
+    # loads from it — the unauthenticated deletion signal is ignored.
+    tampered = _digest_failed(
+        syn_record("dead", "gone", lifecycle="deleted"), "tampered body"
+    )
+    bundle = build_bundle("bundle-tampered", records=[tampered])
+    assert load([bundle]) == []
+
+
+def test_digest_failed_deleted_copy_does_not_block_active_copy_elsewhere():
+    # audit §10 probe: a digest-failed "deleted" copy of rec-x plus an
+    # ACTIVE copy of rec-x in another bundle -> the active copy LOADS.
+    # (Under the superseded reading the forged signal excluded the id
+    # id-wide; the tightened reading treats the forgery as no signal.)
+    forged = build_bundle(
+        "bundle-forged",
+        records=[_digest_failed(
+            syn_record("rec-x", "deleted copy", lifecycle="deleted"),
+            "forged deletion",
+        )],
+    )
+    live = build_bundle(
+        "bundle-live",
+        records=[syn_record("rec-x", "live copy"), syn_record("rec-y", "y")],
+    )
+    for bundles in ([forged, live], [live, forged]):
+        ids = [r["id"] for r in load(bundles)]
+        assert ids == ["rec-x", "rec-y"], ids
+
+
+def test_valid_deleted_copy_still_id_wide_with_mixed_forgeries():
+    # A digest-VALID deleted copy keeps the id-wide exclusion even when a
+    # second, digest-FAILED deleted copy of the same id is present.
+    valid_deleter = build_bundle(
+        "bundle-valid-del",
+        records=[syn_record("rec-x", "deleted copy", lifecycle="deleted")],
+    )
+    forged_deleter = build_bundle(
+        "bundle-forged-del",
+        records=[_digest_failed(
+            syn_record("rec-x", "deleted copy", lifecycle="deleted"),
+            "tampered",
+        )],
+    )
+    live = build_bundle(
+        "bundle-live",
+        records=[syn_record("rec-x", "live copy")],
+    )
+    assert load([valid_deleter, forged_deleter, live]) == []
+    assert load([forged_deleter]) == []

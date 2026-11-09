@@ -1,0 +1,93 @@
+{
+  "id": "DEL-09",
+  "spec_version": "0.1",
+  "title": "import write boundary: a stale copy of a store-tombstoned id is rejected with a typed error",
+  "comment": "SPEC 1.2 write boundary (audit \u00a76, M4 round C1): import_bundle refuses ANY incoming copy of an id the store journal has tombstoned - id-level, regardless of digest - with TombstonedIdRejectedError naming the id. UPDATED semantics: the old behavior silently filtered the copy; rejection closes the resurrection backdoor at ingest. (The control - a different incoming id is accepted - is pinned by unit tests.)",
+  "op": "import",
+  "input": {
+    "store": {
+      "records": [
+        {
+          "id": "rec-survivor",
+          "kind": "fact",
+          "body": "synthetic survivor body",
+          "scope": {
+            "owner": "user-synthetic-01"
+          },
+          "time": {
+            "created": "2026-11-05T08:00:00Z"
+          },
+          "lifecycle": "active",
+          "provenance": {
+            "source": "synthetic-fixture"
+          },
+          "consent": {
+            "exportable": true
+          },
+          "integrity": {
+            "algo": "sha256",
+            "digest": "bea43a1fea34c089c1c5de0dcf2727d9c1cb8950bc8e6a9b592a21bdc1add3ce"
+          },
+          "mbcp": {
+            "load_policy": {
+              "priority": "standard",
+              "max_chars": 4096,
+              "on_budget_exceed": "skip",
+              "merge": "append_first_wins"
+            }
+          }
+        }
+      ],
+      "tombstones": [
+        {
+          "target_id": "rec-x",
+          "deleted_at": "2026-11-05T08:00:00Z",
+          "reason": "synthetic erasure request",
+          "derived_artifacts": []
+        }
+      ]
+    },
+    "bundle": {
+      "bundle": {
+        "id": "sc-del09-stale"
+      },
+      "mbcp_version": "0.1",
+      "records": [
+        {
+          "id": "rec-x",
+          "kind": "fact",
+          "body": "stale synthetic copy",
+          "scope": {
+            "owner": "user-synthetic-01"
+          },
+          "time": {
+            "created": "2026-11-05T08:00:00Z"
+          },
+          "lifecycle": "active",
+          "provenance": {
+            "source": "synthetic-fixture"
+          },
+          "consent": {
+            "exportable": true
+          },
+          "integrity": {
+            "algo": "sha256",
+            "digest": "bebdd32aab57d4984fe836934b5a18a67ee0dba61e4c9741008498e25580ce05"
+          },
+          "mbcp": {
+            "load_policy": {
+              "priority": "standard",
+              "max_chars": 4096,
+              "on_budget_exceed": "skip",
+              "merge": "append_first_wins"
+            }
+          }
+        }
+      ],
+      "tombstones": []
+    }
+  },
+  "expect": {
+    "error": "TombstonedIdRejectedError"
+  }
+}

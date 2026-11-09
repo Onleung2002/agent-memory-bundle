@@ -1,0 +1,98 @@
+{
+  "id": "LOAD-06",
+  "spec_version": "0.1",
+  "title": "duplicate tiebreak: attacker-chosen bundle names cannot make the stale copy win",
+  "comment": "SPEC 1.2 duplicate tiebreak (audit \u00a79, M4 round C1): two active copies of one id, both declaring the default append_first_wins, stale copy in 'aaa-stale' and fresh in 'zzz-fresh'. Bundle-id first-wins would let the attacker's NAME choice make the stale copy win; the tightened semantics pick the copy with the GREATEST canonical SHA-256 of the record - here the fresh copy - independent of bundle ids. Both input orders byte-identical are pinned by unit tests.",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "aaa-stale"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-dup",
+            "kind": "fact",
+            "body": "STALE attacker copy #45",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "c8ef333174197a612c6c76979f5ed0fd7644adedbdc2d1264e854cb2d9edba97"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "zzz-fresh"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-dup",
+            "kind": "fact",
+            "body": "fresh legitimate copy",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "9fe253fbe311184ef93ed1a67c81e8b6b89cc5f77310624f6bb9affa9c1d456d"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-dup"
+    ],
+    "bodies": {
+      "rec-dup": "fresh legitimate copy"
+    },
+    "digests_valid": true
+  }
+}

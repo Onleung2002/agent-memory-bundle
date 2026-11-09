@@ -39,8 +39,9 @@ Layout of a service root using propagation (in addition to the L1 layout)::
 
 Determinism: a pack is a pure function of (journal tombstone set,
 target_ids, source_root, issued_at) — tombstones are sorted by canonical
-SHA-256, the pack digest is over the sorted digest list, and the whole
-artifact is canonical JSON (SPEC 1.4). Same inputs -> byte-identical pack.
+SHA-256, the pack digest binds the source root AND the sorted digest
+list, and the whole artifact is canonical JSON (SPEC 1.4). Same inputs ->
+byte-identical pack.
 """
 
 import json
@@ -134,11 +135,21 @@ def _validate_pack(pack):
             "tombstone_digests do not match the pack tombstones "
             "(mutated tombstone or stale digest list)"
         )
-    # 2. pack digest is over the sorted tombstone digest list.
-    if body["pack_digest"] != canonical_sha256(computed):
+    # 2. pack digest binds the SOURCE ROOT and the sorted tombstone digest
+    #    list (SPEC §2 audit-tightening note, 2026-11-08): the digest is
+    #    the canonical SHA-256 of the object {"source_root": ...,
+    #    "tombstone_digests": [...]} (deterministic shape — canonical form
+    #    sorts the keys). Two roots exporting the SAME tombstone set now
+    #    produce DIFFERENT pack digests, so their acks never collide on
+    #    one ack path/key and ack attribution cannot be forged across
+    #    roots (audit §7).
+    if body["pack_digest"] != canonical_sha256({
+        "source_root": body["source_root"],
+        "tombstone_digests": computed,
+    }):
         raise PackValidationError(
-            "pack_digest does not match the recomputed digest over the "
-            "sorted tombstone digest list"
+            "pack_digest does not match the recomputed digest over "
+            "(source_root, sorted tombstone digest list)"
         )
     # 3. the attestation must bind THIS pack, not some other one.
     attestation = body["attestation"]
@@ -165,8 +176,12 @@ def export_propagation_pack(root, target_ids=None, *, source_root=None, now=None
     Tombstones come from ``all_tombstones()`` (deduped, A-16 tiebreak
     semantics); ``target_ids`` optionally restricts the export. Tombstones
     are sorted by canonical SHA-256 so the pack is independent of journal
-    write order; the pack digest is the SHA-256 of the canonical form of
-    the sorted tombstone digest list.
+    write order. The pack digest is the canonical SHA-256 of the object
+    ``{"source_root": ..., "tombstone_digests": [<sorted digests>]}`` —
+    it binds the source root AND the tombstone set (SPEC §2 audit-
+    tightening note, 2026-11-08): two roots exporting the same tombstone
+    set are DIFFERENT packs with different ack paths, so ack attribution
+    cannot collide across roots (audit §7).
 
     Deterministic: same journal state + same (``source_root``, ``now``)
     -> byte-identical pack. No signatures — digest-chain integrity only;
@@ -179,11 +194,17 @@ def export_propagation_pack(root, target_ids=None, *, source_root=None, now=None
         wanted = set(target_ids)
         tombstones = [t for t in tombstones if t["target_id"] in wanted]
     # sort by full canonical digest: fully content-determined, so any two
-    # roots holding the same tombstone set export the same pack.
+    # exports of the same tombstone set list identical digests.
     tombstones = sorted(tombstones, key=canonical_sha256)
     digests = [canonical_sha256(t) for t in tombstones]
-    pack_digest = canonical_sha256(digests)
     source_root = source_root if source_root is not None else str(service.root)
+    # pack digest binds source_root + the sorted tombstone digest list
+    # (SPEC §2 audit-tightening note): same set, different root -> different
+    # pack, different ack path (audit §7 ack-attribution collision closed).
+    pack_digest = canonical_sha256({
+        "source_root": source_root,
+        "tombstone_digests": digests,
+    })
     issued_at = now or utc_now()
     body = {
         "source_root": source_root,

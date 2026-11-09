@@ -6,9 +6,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mbcp import apply_tombstones, build_bundle, canonical_sha256, import_bundle, make_tombstone
+from mbcp import (
+    TombstonedIdRejectedError,
+    apply_tombstones,
+    build_bundle,
+    canonical_sha256,
+    import_bundle,
+    make_tombstone,
+)
 
-from syn import FIXED_TS, syn_record
+from syn import FIXED_TS, assert_raises, syn_record
 
 
 def test_apply_tombstones_removes_targeted_records():
@@ -31,19 +38,120 @@ def test_tombstone_first_ordering_inside_single_bundle():
     assert [t["target_id"] for t in store["tombstones"]] == ["ghost"]
 
 
-def test_stale_bundle_cannot_resurrect_deleted_record():
-    # store already knows rec-x was deleted...
+def test_stale_bundle_copy_of_store_tombstoned_id_is_rejected():
+    # UPDATED-PIN (M4 round C1, SPEC 1.2 write boundary, audit §6): the
+    # old semantics silently FILTERED an incoming copy of a store-
+    # tombstoned id; the tightened semantics REJECT the ingest with a
+    # typed error naming the id — resurrection is closed at the write
+    # boundary, not just at load time.
     store = {
         "records": [syn_record("rec-y", "survivor")],
         "tombstones": [make_tombstone("rec-x", "erased", deleted_at=FIXED_TS)],
     }
-    # ...a stale bundle still carries the deleted row (and no tombstone)
     stale = build_bundle("bundle-stale", records=[syn_record("rec-x", "stale copy")])
-    merged = import_bundle(store, stale)
-    ids = [r["id"] for r in merged["records"]]
-    assert "rec-x" not in ids
-    assert ids == ["rec-y"]
-    assert "rec-x" in [t["target_id"] for t in merged["tombstones"]]
+    assert_raises(TombstonedIdRejectedError, import_bundle, store, stale)
+    try:
+        import_bundle(store, stale)
+    except TombstonedIdRejectedError as err:
+        assert "rec-x" in str(err)
+    else:
+        raise AssertionError("expected TombstonedIdRejectedError")
+
+
+def test_import_still_accepts_untombstoned_incoming_ids():
+    # audit §6 probe, control: a DIFFERENT incoming id is accepted.
+    store = {
+        "records": [],
+        "tombstones": [make_tombstone("rec-x", "erased", deleted_at=FIXED_TS)],
+    }
+    fresh = build_bundle(
+        "bundle-fresh",
+        records=[syn_record("rec-y", "unrelated")],
+    )
+    merged = import_bundle(store, fresh)
+    assert [r["id"] for r in merged["records"]] == ["rec-y"]
+
+
+def test_incoming_bundles_own_tombstone_still_filters_silently():
+    # Importer contract (SPEC 1.2/§4): a bundle that carries the tombstone
+    # for a row it still lists is NOT a resurrection attempt — the write
+    # boundary only gates on the STORE journal; the bundle's own tombstone
+    # silently wins over its stale row (tombstone-first, unchanged).
+    store = {"records": [], "tombstones": []}
+    bundle = build_bundle(
+        "bundle-order",
+        records=[syn_record("ghost", "should not survive")],
+        tombstones=[make_tombstone("ghost", "deleted", deleted_at=FIXED_TS)],
+    )
+    merged = import_bundle(store, bundle)
+    assert merged["records"] == []
+
+
+def test_apply_tombstones_nfc_normalizes_both_sides():
+    # SPEC 1.5 / audit §12: tombstone target vs record id comparison is
+    # NFC-normalized on both sides — an NFD variant of the target cannot
+    # survive the filter, and ids pass through verbatim. (Pinned here
+    # because apply_tombstones takes raw dicts: the load/build grammar
+    # gates reject non-ASCII record ids before this point, so this is the
+    # one place the NFD attack shape is reachable.)
+    nfc_id = "caf\u00e9"  # composed (single code point)
+    nfd_id = "cafe\u0301"  # decomposed (e + combining acute) \u2014 distinct bytes
+    assert nfc_id != nfd_id
+    # the grammar gates reject non-ASCII record ids at build/load time, so
+    # construct these raw copies by id-swap (integrity binds the body only,
+    # and apply_tombstones/import_bundle are the raw comparison layer).
+    nfc_copy = syn_record("placeholder", "composed body")
+    nfc_copy["id"] = nfc_id
+    nfd_copy = syn_record("placeholder", "decomposed body")
+    nfd_copy["id"] = nfd_id
+    tomb = make_tombstone(nfc_id, "erased", deleted_at=FIXED_TS)
+    remaining = apply_tombstones([nfc_copy, nfd_copy], [tomb])
+    assert remaining == []
+    # controls: NFC tombstone still filters an NFC id; verbatim ids keep
+    # their original byte form in survivors
+    other = apply_tombstones([nfd_copy], [make_tombstone("other", "x", deleted_at=FIXED_TS)])
+    assert [r["id"] for r in other] == [nfd_id]
+    nfc_only = apply_tombstones([nfc_copy], [tomb])
+    assert nfc_only == []
+
+
+def test_import_bundle_nfc_normalized_rejection():
+    # SPEC 1.5 / audit §12, ingest side: the store tombstone comparison is
+    # NFC-normalized — an NFD record id under an NFC store tombstone is
+    # rejected, and vice versa.
+    nfc_id = "caf\u00e9"  # composed (single code point)
+    nfd_id = "cafe\u0301"  # decomposed (e + combining acute) — distinct bytes
+    store = {
+        "records": [],
+        "tombstones": [make_tombstone(nfc_id, "erased", deleted_at=FIXED_TS)],
+    }
+    nfd_record = syn_record("placeholder", "decomposed stale copy")
+    nfd_record["id"] = nfd_id
+    bundle = {"records": [nfd_record], "tombstones": []}
+    assert_raises(TombstonedIdRejectedError, import_bundle, store, bundle)
+    # reverse direction: NFD tombstone target, NFC record id
+    store2 = {
+        "records": [],
+        "tombstones": [make_tombstone(nfd_id, "erased", deleted_at=FIXED_TS)],
+    }
+    nfc_record = syn_record("placeholder", "composed stale copy")
+    nfc_record["id"] = nfc_id
+    assert_raises(
+        TombstonedIdRejectedError,
+        import_bundle,
+        store2,
+        {"records": [nfc_record], "tombstones": []},
+    )
+
+
+def test_case_variants_of_ids_stay_distinct():
+    # SPEC 1.5 known residual: NFC does NOT casefold — 'Rec-1' and 'rec-1'
+    # are different ids; a tombstone for one must not filter the other.
+    tomb = make_tombstone("Rec-1", "erased", deleted_at=FIXED_TS)
+    lower = syn_record("rec-1", "lower copy")
+    upper = syn_record("Rec-1", "upper copy")
+    remaining = apply_tombstones([lower, upper], [tomb])
+    assert [r["id"] for r in remaining] == ["rec-1"]
 
 
 def test_incoming_tombstone_deletes_existing_store_record():
