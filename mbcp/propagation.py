@@ -174,7 +174,14 @@ def _validate_pack(pack):
     return body
 
 
-def export_propagation_pack(root, target_ids=None, *, source_root=None, now=None):
+def export_propagation_pack(
+    root,
+    target_ids=None,
+    *,
+    source_root=None,
+    now=None,
+    lock_timeout=DEFAULT_LOCK_TIMEOUT,
+):
     """Export this root's tombstone journal as a propagation pack (RFC Q1).
 
     ``root`` is a service-root path or an :class:`L1DeletionService`.
@@ -188,47 +195,55 @@ def export_propagation_pack(root, target_ids=None, *, source_root=None, now=None
     set are DIFFERENT packs with different ack paths, so ack attribution
     cannot collide across roots (audit §7).
 
+    The journal read holds the root advisory lock (audit §3, ADV-C2-3):
+    an export must not observe the journal/bundles torn mid-delete.
+    ``lock_timeout`` bounds the wait; a timeout raises the typed
+    :class:`~mbcp.deletion.LockTimeoutError`. The lock is re-entrant, so
+    an export nested inside an already-locked flow on the same root is
+    safe.
+
     Deterministic: same journal state + same (``source_root``, ``now``)
     -> byte-identical pack. No signatures — digest-chain integrity only;
     tamper-evidence relies on the writer of this root not forging;
     cryptographic signing is M4/L4 scope.
     """
     service = _as_service(root)
-    tombstones = service.all_tombstones()
-    if target_ids is not None:
-        wanted = set(target_ids)
-        tombstones = [t for t in tombstones if t["target_id"] in wanted]
-    # sort by full canonical digest: fully content-determined, so any two
-    # exports of the same tombstone set list identical digests.
-    tombstones = sorted(tombstones, key=canonical_sha256)
-    digests = [canonical_sha256(t) for t in tombstones]
-    source_root = source_root if source_root is not None else str(service.root)
-    # pack digest binds source_root + the sorted tombstone digest list
-    # (SPEC §2 audit-tightening note): same set, different root -> different
-    # pack, different ack path (audit §7 ack-attribution collision closed).
-    pack_digest = canonical_sha256({
-        "source_root": source_root,
-        "tombstone_digests": digests,
-    })
-    issued_at = now or utc_now()
-    body = {
-        "source_root": source_root,
-        "issued_at": issued_at,
-        "tombstones": tombstones,
-        "tombstone_digests": digests,
-        "pack_digest": pack_digest,
-        "attestation": {
+    with service._root_lock(lock_timeout):
+        tombstones = service.all_tombstones()
+        if target_ids is not None:
+            wanted = set(target_ids)
+            tombstones = [t for t in tombstones if t["target_id"] in wanted]
+        # sort by full canonical digest: fully content-determined, so any two
+        # exports of the same tombstone set list identical digests.
+        tombstones = sorted(tombstones, key=canonical_sha256)
+        digests = [canonical_sha256(t) for t in tombstones]
+        source_root = source_root if source_root is not None else str(service.root)
+        # pack digest binds source_root + the sorted tombstone digest list
+        # (SPEC §2 audit-tightening note): same set, different root -> different
+        # pack, different ack path (audit §7 ack-attribution collision closed).
+        pack_digest = canonical_sha256({
             "source_root": source_root,
-            "pack_digest": pack_digest,
+            "tombstone_digests": digests,
+        })
+        issued_at = now or utc_now()
+        body = {
+            "source_root": source_root,
             "issued_at": issued_at,
-        },
-    }
-    pack = {
-        "pack": body,
-        "integrity": {"algo": "sha256", "digest": canonical_sha256(body)},
-    }
-    _schema.validate(pack, _pack_schema())
-    return pack
+            "tombstones": tombstones,
+            "tombstone_digests": digests,
+            "pack_digest": pack_digest,
+            "attestation": {
+                "source_root": source_root,
+                "pack_digest": pack_digest,
+                "issued_at": issued_at,
+            },
+        }
+        pack = {
+            "pack": body,
+            "integrity": {"algo": "sha256", "digest": canonical_sha256(body)},
+        }
+        _schema.validate(pack, _pack_schema())
+        return pack
 
 
 def import_propagation_pack(root, pack, *, now=None, lock_timeout=DEFAULT_LOCK_TIMEOUT):

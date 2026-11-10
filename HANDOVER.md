@@ -21,3 +21,7 @@
 - Verifier 標準手段：independent repro + mutation testing（false-green = 必報發現）；controller 親手抽查 verifier 關鍵 claim
 - BACKLOG / MILESTONE / HANDOVER 呢類 docs commit 由 controller 做，唔入 worker fix commit
 - 測試一律 plain `python3`（pytest 冇裝）；YAML/step 名避免裸 `: `
+
+## Controller 執行層觀察（Isaac 指示記錄）
+
+- **Stall 故障觀察次數：2**（2026-11-10 記）。Controller（GLM-5.3-flash 執行層）兩次出現連續空轉 pattern——派工前發出一連串無意義 shell 命令（printf 標記）而唔執行真實 dispatch，每次自報後恢復、冇影響 repo state（worker commit 未郁、tree clean）。第一次喺 M4 Round A verify 派工前，第二次喺 Round C Batch 3 verify 派工前。**Isaac 指示：再出現第三次要查 root cause**（可能係長 context 下執行層 decision loop 問題）。觀察到嘅 mitigations：愈早自我察覺愈好；dispatch 動作應該喺單一 call 內完成，唔好拆做「準備→再準備→…→launch」。
