@@ -90,6 +90,14 @@
 4. **[backlog] ADV-C2-4**：`.mbcp.lock` 被 unlink while held → 之後嘅新 process 鎖新 inode，跨 process 互斥 void（inherent advisory-lock 屬性）；in-process gating 唔受影響。SPEC §1.2.3 已一句講明。
 5. **[裁定]**：bare `build_receipt(inventory=None)` 記空 set severity = LOW（唔新增洗白路徑，unsigned-receipt 限制先前已有；inventory 嚴格只加證據）；pre-C2 receipts schema-invalid breaking by design，無 committed artifact 受影響。
 
+## M4 Round C Batch 3 verify（2026-11-10，4a71609 PASS-WITH-ADVISORIES，mutation 全紅零 false-green）
+1. **[已修] ADV-C2-3 正式標 closed**：put_bundle/export_propagation_pack 入 root lock；import_bundle 證實真 write-free（grep 零 file I/O）、record_pending_propagation 留鎖外（O_APPEND 一行，best-effort，verify_receipt 唔會查）——SPEC 1.2.3 修訂句已落。
+2. **[已修] ADV-C3-1**：`_safe_id` docstring「distinct ids never collide」係 overclaim（second-preimage live 重現：`abc_` ↔ `abc--639ce2d59e09` 同檔名）——措辭改「collisions are typed-guarded, injectivity not claimed」，code 唔郁（safety = deterministic mapping + typed collision guard）。
+3. **[backlog] ADV-C3-2**：legacy 折疊 id 舊檔名與 post-C3 put 並存無 collision（`bundle_inventory` set 塌縮重複 id；無資料損失）——要 coherence check 或 one-shot migration scan。
+4. **[backlog] ADV-C3-3**（pre-existing）：crash-torn `propagation.jsonl` 永久毒（typed fail-closed 無 heal）；O_APPEND atomicity 係 Linux 保證唔係 strict POSIX——portability 措辭注意。
+5. **[已 pin] ADV-C3-4**：跨 process flock 證據 pin（controller 親手寫 `tests/test_flock_cross_process.py`：兩真 OS process、barrier/Event 無 sleep、phase1 typed timeout + phase2 釋鎖後成功 + phase1 零寫入 residue；mutation（neutralize flock）乾淨捉到）。「SPEC 已聲稱嘅嘢 suite 必須有證據」。
+6. **[裁定] delete-handle verbatim residual = LOW**：`get_bundle`/delete bundle_id 檔案定址保持 verbatim（case-variant = 唔同檔案），fail-closed；SPEC 1.5 comparison scope 本來就唔涵蓋 file addressing——spec-consistent，已在 §1.2.3 補句講明。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。

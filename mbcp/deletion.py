@@ -351,8 +351,13 @@ def _safe_id(value):
     rewrite keeps its readable folded form PLUS a deterministic
     disambiguator — the first 12 hex of its canonical SHA-256 — so:
 
-    - distinct ids never collide (equal outputs imply equal 12-hex
-      disambiguators, i.e. equal SHA-256 preimages, i.e. equal ids);
+    - collisions are typed-guarded, injectivity not claimed: distinct ids
+      map to the same name only by deliberate second-preimage construction
+      (the mapped name of a rewritten id is itself grammar-valid and
+      folding-unchanged, e.g. ``abc_`` vs ``abc--<sha12(abc_)>`` — a real,
+      live-verified edge). The safety property is the deterministic pure
+      mapping PLUS the typed ``BundleIdCollisionError`` guard that refuses
+      a second put onto a held filename, whichever id arrives first;
     - identical ids always map to identical names (pure function of the
       id — determinism preserved);
     - unchanged ids keep their exact legacy filenames.

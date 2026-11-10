@@ -62,7 +62,14 @@ L1 receipt 係 immutable artifact——`recover()` 移除咗 receipt 未報告�
 > writers, NOT a security boundary: the lock is advisory, the OS releases it if a holder crashes, and removing
 > the lock file while held voids cross-process exclusion. Same-process re-entrancy (nested locked calls on one
 > thread) is enforced by a per-root owner plus condition variable with a per-thread held count, and never
-> self-deadlocks. `put_bundle` is NOT yet under the lock (known residual — ADV-C2-3).
+> `put_bundle` and propagation export (`export_propagation_pack`) are also under the lock for their full
+> duration (ADV-C2-3 closed 2026-11-10): a put can no longer land mid-delete (the born-inventory-divergent
+> receipt hole) and an export cannot read the journal torn mid-delete. `record_pending_propagation` stays
+> outside the lock by design — it appends one O_APPEND line (best-effort attempts audit, never consulted by
+> `verify_receipt`); in-memory-only `import_bundle` needs no lock. Cross-process exclusion is pinned by a
+> two-OS-process test (tests/test_flock_cross_process.py). Bundle-id 檔案定址（`get_bundle`/`delete` 嘅
+> bundle_id handle→filename lookup）保持 verbatim——case-variant bundle id 係唔同檔案；fail-closed
+> （unknown bundle typed error），唔係比對語意一部分。
 
 ### 1.2.4 Receipt store inventory（v0.1 audit 收緊：§13）
 
