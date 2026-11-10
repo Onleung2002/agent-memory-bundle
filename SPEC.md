@@ -68,7 +68,7 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 - **Malformed structure → `LoadValidationError`**（唔係 KeyError/TypeError）：缺 required fields、類型錯、enum 值唔合法、`integrity.digest` 唔係 64 位小寫 hex，一律 reject。
 - **Build path manifest 必填**：`build_bundle`/`validate_bundle`（build path）要求 manifest 帶齊 `bundle`、`mbcp_version`、`records`、`tombstones` 四個 keys（缺 key = build-path error；空 array 合法）。Load path 保持 tolerant reader（缺 key 容忍成空 list，P3）——不對稱係明文設計，唔係遺漏。
 - **`load_policy.max_chars` 最少 1（v0.1 audit 收緊）**：0 會清零整個 priority class（一條 hostile record 靜默滅掉所有 critical 記憶，availability 攻擊面）。Build path 拒收 0/負值；load path 同樣拒收（`LoadValidationError`）——兩邊都堵，唔靠 producer 自律。
-- **Id grammar（v0.1 audit 收緊，涵蓋 record id）**：`record.id` 與 `bundle.id` 同一 grammar——`^[A-Za-z0-9._-]{1,128}$`（bundle 64 / record 128；`..` 拒收）。**所有 id 比對前先 Unicode NFC normalize**（tombstone `target_id` vs record id、duplicate resolution）——NFD 變體唔可以繞過 tombstone filter；id 儲存仍然 verbatim（normalize 係比對語意，唔係改寫）。大小寫變體（`Rec-1` vs `rec-1`）grammar 仍然容許、NFC 唔處理——已知殘餘，記 BACKLOG。
+- **Id grammar（v0.1 audit 收緊，涵蓋 record id）**：`record.id` 與 `bundle.id` 同一 grammar——record `^[A-Za-z0-9._:-]{1,128}$`（bundle 64：`^[A-Za-z0-9._-]{1,64}$`；`..` 拒收）。**`:` 明文合法（v0.1 裁定）**：importer namespace prefix（`chatgpt:<conv-id>`、`hermes-sess:<id>`）係來源標識內嵌 id 嘅正確形狀；`:` 無 traversal/NFC/filename 風險（record id 唔會變檔名）。**所有 id 比對前先 Unicode NFC normalize**（tombstone `target_id` vs record id、duplicate resolution）——NFD 變體唔可以繞過 tombstone filter；id 儲存仍然 verbatim（normalize 係比對語意，唔係改寫）。大小寫變體（`Rec-1` vs `rec-1`）grammar 仍然容許、NFC 唔處理——已知殘餘，記 BACKLOG。
 - 嚴格 schema validation（`additionalProperties: false`）只用於 **build path**（`build_bundle`/`validate_*`）；load path 係 tolerant reader。
 
 ### 1.6 Integrity digest（SC-INT）
