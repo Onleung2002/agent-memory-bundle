@@ -144,14 +144,20 @@ def test_import_bundle_nfc_normalized_rejection():
     )
 
 
-def test_case_variants_of_ids_stay_distinct():
-    # SPEC 1.5 known residual: NFC does NOT casefold — 'Rec-1' and 'rec-1'
-    # are different ids; a tombstone for one must not filter the other.
+def test_case_variants_of_ids_compare_case_insensitively():
+    # SPEC 1.5 as amended 2026-11-10 (case-variant residual CLOSED): id
+    # comparison is NFC + ASCII case-insensitive — 'Rec-1' and 'rec-1' are
+    # the same id; a tombstone for one filters the other, BOTH directions.
+    # Ids are still stored verbatim: the surviving record keeps its own id.
     tomb = make_tombstone("Rec-1", "erased", deleted_at=FIXED_TS)
     lower = syn_record("rec-1", "lower copy")
     upper = syn_record("Rec-1", "upper copy")
     remaining = apply_tombstones([lower, upper], [tomb])
-    assert [r["id"] for r in remaining] == ["rec-1"]
+    assert remaining == []
+    # reverse direction: lowercase tombstone target, uppercase record id
+    tomb_lower = make_tombstone("rec-1", "erased", deleted_at=FIXED_TS)
+    remaining = apply_tombstones([upper], [tomb_lower])
+    assert remaining == []
 
 
 def test_incoming_tombstone_deletes_existing_store_record():

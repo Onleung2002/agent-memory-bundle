@@ -67,17 +67,30 @@ def normalize_timestamp(value):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_ASCII_CASE_TRANS = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
+
+
 def normalize_id(text):
-    """Unicode NFC normalization for id COMPARISON (SPEC 1.5, audit §12).
+    """NFC + ASCII case-insensitive normalization for id COMPARISON.
+
+    SPEC 1.5 as amended 2026-11-10 (case-variant residual closed): id
+    comparison is NFC plus ASCII case-insensitive; the id grammar is
+    ASCII-only, so the case fold is pure ASCII (a ``translate``, never a
+    Unicode ``lower()`` — deterministic and length-preserving even on the
+    defensive non-grammar paths).
 
     Comparison semantics only: ids are stored verbatim, never rewritten.
     Every id comparison (tombstone ``target_id`` vs record id, duplicate
-    resolution, write-boundary rejection sets) normalizes BOTH sides with
-    NFC first, so an NFD variant of an id cannot bypass a tombstone
-    filter. Case variants are NOT folded (``Rec-1`` vs ``rec-1`` stay
-    distinct — a known residual, per SPEC 1.5).
+    resolution, write-boundary rejection sets, delete/recover matching)
+    normalizes BOTH sides first, so neither an NFD variant nor a case
+    variant of an id can bypass a tombstone filter or duplicate merge.
+    NFC-on-ASCII is identity, so for grammar-valid ids the case fold is
+    the only active component; NFD closure stays grammar-rejection-based
+    (non-ASCII ids never reach comparison — they fail ingest validation).
     """
-    return unicodedata.normalize("NFC", text)
+    return unicodedata.normalize("NFC", text).translate(_ASCII_CASE_TRANS)
 
 
 def canonical_bytes(obj):

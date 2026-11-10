@@ -43,17 +43,21 @@ On-disk layout of a service root::
     receipts/<receipt-id>.json   # L1 erasure receipts
     .mbcp.lock                   # root advisory lock file (flock; never data)
 
-Root advisory lock (audit §3): :meth:`L1DeletionService.delete`,
-:meth:`L1DeletionService.recover` and propagation intake
-(:func:`mbcp.propagation.import_propagation_pack`) hold an exclusive
-``fcntl.flock`` on ``.mbcp.lock`` for their whole duration, so two
-processes (or threads) sharing one service root cannot interleave
-journal/manifest writes. Acquisition is bounded by a ``lock_timeout``
-parameter (default :data:`DEFAULT_LOCK_TIMEOUT` seconds); a timeout
-raises the typed :class:`LockTimeoutError` — never a silent retry.
-Same-process nested acquisition is re-entrant (per-thread held count),
-so a locked call may internally invoke another locked call; the OS
-releases the flock automatically if a holder crashes.
+Root advisory lock (audit §3, ADV-C2-3): :meth:`L1DeletionService.delete`,
+:meth:`L1DeletionService.put_bundle`, :meth:`L1DeletionService.recover`,
+propagation export (:func:`mbcp.propagation.export_propagation_pack`) and
+propagation intake (:func:`mbcp.propagation.import_propagation_pack`) hold
+an exclusive ``fcntl.flock`` on ``.mbcp.lock`` for their whole duration,
+so two processes (or threads) sharing one service root cannot interleave
+journal/manifest writes — in particular a put_bundle can no longer land
+mid-delete (after the deletion-time inventory snapshot, before the
+receipt) and an export can no longer read the bundles+journal torn
+mid-delete. Acquisition is bounded by a ``lock_timeout`` parameter
+(default :data:`DEFAULT_LOCK_TIMEOUT` seconds); a timeout raises the
+typed :class:`LockTimeoutError` — never a silent retry. Same-process
+nested acquisition is re-entrant (per-thread held count), so a locked
+call may internally invoke another locked call; the OS releases the
+flock automatically if a holder crashes.
 
 Receipt vs recovery semantics (BACKLOG M2 #4, verify round 2 advisory 2):
 
@@ -180,6 +184,19 @@ class LockTimeoutError(DeletionError):
 
 LOCK_FILE_NAME = ".mbcp.lock"
 DEFAULT_LOCK_TIMEOUT = 10.0
+
+
+def _norm_id(value):
+    """NFC + ASCII case fold for id COMPARISON; pass non-strings through.
+
+    Same defensive pattern as ``tombstone._norm``: hostile on-disk
+    artifacts (receipts, recovery log lines) can carry a non-string id,
+    and comparison must degrade to the pre-tightening behavior — never
+    match, never crash untyped. All id-vs-id comparisons in this module
+    route through here (SPEC 1.5 as amended 2026-11-10: storage stays
+    verbatim, comparison is NFC + ASCII case-insensitive).
+    """
+    return normalize_id(value) if isinstance(value, str) else value
 
 # In-process lock table: canonical root path -> {"owner": thread ident or
 # None, "fh": open lock-file handle or None, "cond": Condition}.
@@ -322,7 +339,34 @@ def _fsync_dir(directory):
 
 
 def _safe_id(value):
-    return SAFE_ID_RE.sub("_", value).strip("_") or "bundle"
+    """Map a bundle id to an on-disk file stem, INJECTIVELY (ADV-C2-3/A-4).
+
+    The old folding (``SAFE_ID_RE.sub("_", ...).strip("_")``) was
+    non-injective: ``"abc"`` and ``"abc_"`` — both grammar-valid — folded
+    to the same stem, so two distinct ids could share one file and one
+    bundle's data was silently dropped (audit §4 probe surface).
+
+    Scheme: ids the folding leaves unchanged pass through verbatim
+    (readable, stable names for the common case). An id the folding would
+    rewrite keeps its readable folded form PLUS a deterministic
+    disambiguator — the first 12 hex of its canonical SHA-256 — so:
+
+    - distinct ids never collide (equal outputs imply equal 12-hex
+      disambiguators, i.e. equal SHA-256 preimages, i.e. equal ids);
+    - identical ids always map to identical names (pure function of the
+      id — determinism preserved);
+    - unchanged ids keep their exact legacy filenames.
+
+    The bundle-id grammar (audit §4) restricts ingest to ids the folding
+    does not rewrite, so this path is defensive for out-of-band/legacy
+    files; the :class:`BundleIdCollisionError` guard in ``put_bundle``
+    refuses — typed, never silently — whenever a mapped filename is
+    already held by a DIFFERENT id.
+    """
+    folded = SAFE_ID_RE.sub("_", value).strip("_") or "bundle"
+    if folded == value:
+        return folded
+    return f"{folded}--{canonical_sha256(value)[:12]}"
 
 
 def inventory_digest(bundle_ids):
@@ -474,8 +518,18 @@ class L1DeletionService:
         return sorted({bid for bid, _p, _m in self._bundle_manifests()})
 
     # -- bundles ----------------------------------------------------------
-    def put_bundle(self, manifest):
+    def put_bundle(self, manifest, *, lock_timeout=DEFAULT_LOCK_TIMEOUT):
         """Validate + atomically persist a manifest; returns its path.
+
+        The whole read-check-write runs under the root advisory lock
+        (audit §3, ADV-C2-3): delete() holds the lock for its full
+        duration, so a put_bundle racing a delete WAITS instead of
+        landing mid-delete — a bundle can no longer appear after the
+        deletion-time inventory snapshot but before the receipt is
+        written (the born-inventory-divergent receipt hole), and the
+        tombstone-journal read below cannot be torn by a concurrent
+        delete's journal append. ``lock_timeout`` bounds the wait; a
+        timeout raises the typed :class:`LockTimeoutError`.
 
         Write boundary (SPEC 1.2, audit §6): any record copy whose id is
         already tombstoned in the journal is rejected with the typed
@@ -494,6 +548,11 @@ class L1DeletionService:
         ``_safe_id`` belonging to a DIFFERENT bundle id is never
         overwritten silently.
         """
+        with self._root_lock(lock_timeout):
+            return self._put_bundle_locked(manifest)
+
+    def _put_bundle_locked(self, manifest):
+        """Locked body of :meth:`put_bundle` (runs under the root lock)."""
         validate_bundle(manifest)
         # Write boundary (SPEC 1.2, v0.1 audit §6 tightening, Isaac ruling
         # 2026-11-08): the resurrection backdoor is closed at INGEST, not
@@ -503,7 +562,9 @@ class L1DeletionService:
         # id. Resurrection can then only reach the store out-of-band (a
         # producer writing bundles/ directly), which is exactly the legacy
         # threat model delete()/recover() already heal. Both sides of the
-        # comparison are NFC-normalized (SPEC 1.5, audit §12).
+        # comparison are NFC + ASCII case-normalized (SPEC 1.5 as amended
+        # 2026-11-10, audit §12) — a case variant of a tombstoned id is
+        # the same id.
         tombstoned_ids = {
             normalize_id(t["target_id"]) for t in self.all_tombstones()
         }
@@ -645,8 +706,14 @@ class L1DeletionService:
 
     # -- removal evidence --------------------------------------------------
     def evidence_path(self, target_id):
-        """Per-target evidence file path (target ids may contain any chars)."""
-        digest = hashlib.sha256(target_id.encode("utf-8")).hexdigest()
+        """Per-target evidence file path (target ids may contain any chars).
+
+        Keyed by the NFC + case-normalized id (SPEC 1.5, amended
+        2026-11-10): delete("Rec-1") and delete("rec-1") address the SAME
+        evidence — one logical id, one removal ledger — while the ledger
+        content keeps the first-seen verbatim id.
+        """
+        digest = hashlib.sha256(_norm_id(target_id).encode("utf-8")).hexdigest()
         return self.evidence_dir / f"{digest}.json"
 
     def _read_evidence(self, target_id):
@@ -657,7 +724,7 @@ class L1DeletionService:
             data = json_loads_strict(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, NonFiniteConstantError) as err:
             raise DeletionError(f"corrupt removal evidence {path}: {err}") from err
-        if not isinstance(data, dict) or data.get("target_id") != target_id:
+        if not isinstance(data, dict) or _norm_id(data.get("target_id")) != _norm_id(target_id):
             raise DeletionError(
                 f"removal evidence {path} does not belong to target {target_id!r}"
             )
@@ -791,12 +858,13 @@ class L1DeletionService:
         scoped to one target id."""
         seen = set()
         entries = []
+        wanted = _norm_id(target_id) if target_id is not None else None
         for entry in self._read_recovery():
             key = (entry["bundle_id"], entry["record_id"], entry["digest"])
             if key in seen:
                 continue
             seen.add(key)
-            if target_id is None or entry["target_id"] == target_id:
+            if wanted is None or _norm_id(entry["target_id"]) == wanted:
                 entries.append(entry)
         return entries
 
@@ -893,14 +961,19 @@ class L1DeletionService:
         # set this receipt will be bound to. The scan above ran BEFORE any
         # rewrite, so this is exactly the deletion-time store SET.
         store_inventory = sorted({bid for bid, _p, _m in bundles})
+        # SPEC 1.5 (amended 2026-11-10): the target is matched NFC + ASCII
+        # case-insensitively — delete("Rec-1") removes a stored "rec-1"
+        # copy. The tombstone/receipt keep the CALLER's verbatim id.
+        target_key = _norm_id(target_id)
         present = [
             (bid, record)
             for bid, _path, manifest in bundles
             for record in manifest.get("records", [])
-            if record["id"] == target_id
+            if _norm_id(record["id"]) == target_key
         ]
         journal_entries = [
-            t for t in self.journal_tombstones() if t["target_id"] == target_id
+            t for t in self.journal_tombstones()
+            if _norm_id(t["target_id"]) == target_key
         ]
 
         if not present:
@@ -945,13 +1018,20 @@ class L1DeletionService:
 
         # 3. rewrite every manifest still carrying the target.
         for _bid, path, manifest in bundles:
-            if not any(r["id"] == target_id for r in manifest.get("records", [])):
+            if not any(
+                _norm_id(r["id"]) == target_key
+                for r in manifest.get("records", [])
+            ):
                 continue
             manifest["records"] = [
-                r for r in manifest.get("records", []) if r["id"] != target_id
+                r
+                for r in manifest.get("records", [])
+                if _norm_id(r["id"]) != target_key
             ]
-            known = {t["target_id"] for t in manifest.get("tombstones", [])}
-            if target_id not in known:
+            known = {
+                _norm_id(t["target_id"]) for t in manifest.get("tombstones", [])
+            }
+            if target_key not in known:
                 manifest["tombstones"] = list(manifest.get("tombstones", [])) + [
                     tombstone
                 ]
@@ -964,7 +1044,7 @@ class L1DeletionService:
                 bid
                 for bid, _path, manifest in self._bundle_manifests()
                 for record in manifest.get("records", [])
-                if record["id"] == target_id
+                if _norm_id(record["id"]) == target_key
             }
         )
         if survivors:
@@ -1196,7 +1276,7 @@ class L1DeletionService:
             link = body.get("supersedes")
             if isinstance(link, str):
                 superseded_digests.add(link)
-            if body.get("target_id") != target_id:
+            if _norm_id(body.get("target_id")) != _norm_id(target_id):
                 continue
             if bundle_id is not None and body.get("bundle_id") != bundle_id:
                 continue
@@ -1483,11 +1563,15 @@ class L1DeletionService:
             )
 
         # ...and must be bound to the durable journal, not merely present in it.
+        # All target comparisons are NFC + ASCII case-insensitive (SPEC 1.5,
+        # amended 2026-11-10): a receipt naming "Rec-1" verifies against a
+        # journal tombstone for "rec-1" of the same logical id.
+        target_key = _norm_id(body["target_id"])
         try:
             journal = [
                 t
                 for t in self.journal_tombstones()
-                if t["target_id"] == body["target_id"]
+                if _norm_id(t["target_id"]) == target_key
             ]
         except DeletionError as err:
             journal = None
@@ -1518,7 +1602,7 @@ class L1DeletionService:
             recovered_pairs = {
                 (entry["record_id"], entry["digest"])
                 for entry in recovered
-                if entry["target_id"] == body["target_id"]
+                if _norm_id(entry["target_id"]) == target_key
             }
         try:
             evidence = self._read_evidence(body["target_id"])
@@ -1580,7 +1664,7 @@ class L1DeletionService:
                     bid
                     for bid, _path, manifest in self._bundle_manifests()
                     for record in manifest.get("records", [])
-                    if record["id"] == body["target_id"]
+                    if _norm_id(record["id"]) == target_key
                 }
             )
         except DeletionError as err:
