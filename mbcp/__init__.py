@@ -4,7 +4,7 @@ Memory Bundle Conformance Profile — deterministic canonical JSON,
 cross-bundle load_policy adjudication, and tombstone-first import.
 """
 
-from .canonical import canonical_bytes, canonical_sha256, utc_now
+from .canonical import canonical_bytes, canonical_sha256, normalize_id, utc_now
 from .bundle import (
     BudgetExceeded,
     LoadValidationError,
@@ -19,7 +19,11 @@ from .bundle import (
     validate_record,
     validate_tombstone,
 )
-from .tombstone import apply_tombstones, import_bundle
+from .tombstone import (
+    TombstonedIdRejectedError,
+    apply_tombstones,
+    import_bundle,
+)
 from .deletion import (
     BundleIdCollisionError,
     DeletionError,
@@ -43,6 +47,7 @@ from .propagation import (
 __all__ = [
     "canonical_bytes",
     "canonical_sha256",
+    "normalize_id",
     "utc_now",
     "BudgetExceeded",
     "LoadValidationError",
@@ -58,6 +63,7 @@ __all__ = [
     "validate_tombstone",
     "apply_tombstones",
     "import_bundle",
+    "TombstonedIdRejectedError",
     "DeletionError",
     "DeletionIncompleteError",
     "BundleIdCollisionError",

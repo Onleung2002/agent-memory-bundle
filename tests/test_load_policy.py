@@ -73,6 +73,12 @@ def test_on_budget_exceed_error():
 
 
 def test_merge_append_first_wins():
+    # NOTE (M4 round C1): "append_first_wins" no longer resolves by
+    # bundle-id order — uniform first-wins groups resolve by the SPEC 1.2
+    # duplicate tiebreak (greatest canonical SHA-256 of the record, audit
+    # §9). This fixture pins the tiebreak outcome: "body from bundle-a"
+    # wins because its record digest is the larger one, not because its
+    # bundle id sorts first.
     first = build_bundle(
         "bundle-a",
         records=[syn_record("dup", "body from bundle-a", merge="append_first_wins")],
@@ -80,6 +86,11 @@ def test_merge_append_first_wins():
     second = build_bundle(
         "bundle-b",
         records=[syn_record("dup", "body from bundle-b", merge="append_first_wins")],
+    )
+    from mbcp import canonical_sha256
+
+    assert canonical_sha256(first["records"][0]) > canonical_sha256(
+        second["records"][0]
     )
     records = load([second, first])  # input order must not matter
     assert len(records) == 1

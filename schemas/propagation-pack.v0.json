@@ -43,7 +43,7 @@
         "pack_digest": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "SHA-256 of the canonical form of the SORTED tombstone digest list."
+          "description": "Canonical SHA-256 of the object {\"source_root\": \"...\", \"tombstone_digests\": [<sorted digests>]} - binds the source root AND the tombstone set (SPEC 2 audit-7 tightening, 2026-11-08): same tombstone set from different roots = different packs, different ack paths."
         },
         "attestation": {
           "type": "object",

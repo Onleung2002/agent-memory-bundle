@@ -254,6 +254,22 @@ def _check_propagate(scenario, expect):
     return failures
 
 
+def _put_resurrect_bundle(service, manifest):
+    """Land a resurrection manifest OUT-OF-BAND (write bundles/ directly).
+
+    Since M4 round C1 (SPEC 1.2 write boundary, audit §6), put_bundle
+    rejects any copy of a journal-tombstoned id — which is exactly what a
+    supersede/regen "resurrect" bundle carries. The scenario stories model
+    a producer bypassing the write boundary (the documented legacy/attack
+    channel that delete()/recover() heal), so the runner lands these
+    manifests through that same channel, byte-identical to put_bundle's
+    write (canonical bytes at bundle_path).
+    """
+    path = service.bundle_path(manifest["bundle"]["id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(manifest))
+
+
 def _check_supersede(scenario, expect):
     """Receipt supersession story (SPEC 1.2.2): delete -> recovery growth
     makes the first receipt under-report -> delete() retry re-issues a
@@ -276,7 +292,9 @@ def _check_supersede(scenario, expect):
             service.put_bundle(manifest)
         first = service.delete(*args)
         for manifest in inp.get("resurrect", []):
-            service.put_bundle(manifest)
+            # UPDATED-PIN (M4 round C1): resurrection bypasses the write
+            # boundary, exactly like the legacy/attack producer it models.
+            _put_resurrect_bundle(service, manifest)
         if inp.get("recover"):
             service.recover()
 
@@ -348,7 +366,9 @@ def _check_regen(scenario, expect):
         first = service.delete(*args)
         first_digest = first["receipt"]["removed_records"][0]["digest"]
         for manifest in inp.get("resurrect", []):
-            service.put_bundle(manifest)
+            # UPDATED-PIN (M4 round C1): resurrection bypasses the write
+            # boundary, exactly like the legacy/attack producer it models.
+            _put_resurrect_bundle(service, manifest)
         second = service.delete(
             *args, derived_artifacts=inp.get("new_artifacts", [])
         )

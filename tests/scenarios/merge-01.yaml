@@ -1,7 +1,8 @@
 {
   "id": "MERGE-01",
   "spec_version": "0.1",
-  "title": "mixed merge modes: error_on_conflict dominates; all-last wins last; otherwise first wins",
+  "title": "mixed merge modes: error_on_conflict dominates; all-last wins last; every other group resolves by the duplicate tiebreak (greatest record digest)",
+  "comment": "UPDATED-PIN (M4 round C1, SPEC 1.2 duplicate tiebreak, audit §9): the old semantics pinned mixed first/last -> first wins by bundle-id order; the tightened semantics resolve any group without a unanimous declared mode by the GREATEST canonical SHA-256 of the record. The winner here is the copy with body 'from b' (record digest 21cf... > 2195...), regardless of bundle names or input order.",
   "op": "load",
   "input": {
     "bundles": [
@@ -90,7 +91,7 @@
       "dup"
     ],
     "bodies": {
-      "dup": "from a"
+      "dup": "from b"
     },
     "digests_valid": true
   }

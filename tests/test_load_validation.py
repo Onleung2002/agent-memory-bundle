@@ -7,7 +7,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mbcp import LoadValidationError, build_bundle, load, make_tombstone, validate_bundle
+from mbcp import (
+    LoadValidationError,
+    build_bundle,
+    load,
+    make_tombstone,
+    validate_bundle,
+    validate_record,
+)
 
 from syn import assert_raises, syn_record
 
@@ -150,3 +157,89 @@ def test_sc_schema_01_build_path_accepts_offset_timestamps():
     for ts in ("2026-06-01T00:00:00Z", "2026-06-01T08:00:00+08:00"):
         tombstone = make_tombstone("rec-x", "erased", deleted_at=ts)
         assert tombstone["deleted_at"] == ts
+
+
+# ---------------------------------------------------------------------------
+# max_chars floor (SPEC 1.5, v0.1 audit §8, M4 round C1): 0 or negative
+# max_chars is rejected on BOTH paths — a hostile record can no longer
+# zero out an entire priority class.
+# ---------------------------------------------------------------------------
+
+
+def test_max_chars_zero_or_negative_rejected_on_load():
+    for bad in (0, -1, -4096):
+        # tamper a valid record: the build path would refuse max_chars<1,
+        # so construct the hostile producer manifest by hand
+        record = syn_record("rec-budget", "body")
+        record["mbcp"]["load_policy"]["max_chars"] = bad
+        assert_raises(
+            LoadValidationError, load, [_raw_bundle(records=[record])]
+        ), bad
+
+
+def test_max_chars_zero_or_negative_rejected_on_build():
+    from mbcp import _schema
+
+    for bad in (0, -1):
+        record = syn_record("rec-budget", "body")
+        record["mbcp"]["load_policy"]["max_chars"] = bad
+        assert_raises(_schema.ValidationError, validate_record, record), bad
+        assert_raises(
+            _schema.ValidationError,
+            build_bundle,
+            "bundle-budget",
+            records=[record],
+        ), bad
+
+
+def test_max_chars_one_is_the_new_floor():
+    record = syn_record("rec-min", "x", max_chars=1)
+    manifest = _raw_bundle(records=[record])
+    (loaded,) = load([manifest])
+    assert loaded["id"] == "rec-min"
+
+
+# ---------------------------------------------------------------------------
+# Record-id grammar (SPEC 1.5, v0.1 audit §12, M4 round C1): record ids
+# carry the id grammar on both paths. JUDGMENT CALL (Round C1): the
+# enforced class is ^[A-Za-z0-9._:-]{1,128}$ — the SPEC class plus ':' —
+# because the shipped chatgpt importer's ids are "chatgpt:<...>" and
+# importers/ is outside this batch's change set. CJK/space/slash and all
+# other non-ASCII characters are rejected on both paths.
+# ---------------------------------------------------------------------------
+
+
+def test_record_id_grammar_rejected_on_load():
+    for bad in ("team/a", "team a", "café", "記憶", "..", "a..b", "a" * 129, ""):
+        record = syn_record("placeholder", "body")
+        record["id"] = bad
+        assert_raises(
+            LoadValidationError, load, [_raw_bundle(records=[record])]
+        ), bad
+
+
+def test_record_id_grammar_rejected_on_build():
+    from mbcp import _schema
+
+    for bad in ("team/a", "team a", "café", "記憶", "..", "a..b", "a" * 129, ""):
+        record = syn_record("placeholder", "body")
+        record["id"] = bad
+        assert_raises(_schema.ValidationError, validate_record, record), bad
+        assert_raises(
+            _schema.ValidationError,
+            build_bundle,
+            "bundle-idg",
+            records=[record],
+        ), bad
+
+
+def test_record_id_grammar_valid_ids_both_paths():
+    from mbcp import _schema
+
+    for good in ("a", "A-Z_a.z-0", "x" * 128, "chatgpt:conv-alpha"):
+        record = syn_record(good, "body")
+        validate_record(record)
+        manifest = build_bundle("bundle-idg", records=[record])
+        validate_bundle(manifest)
+        (loaded,) = load([_raw_bundle(records=[record])])
+        assert loaded["id"] == good

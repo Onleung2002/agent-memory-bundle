@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from . import _schema
-from .canonical import canonical_bytes, canonical_sha256, utc_now
+from .canonical import canonical_bytes, canonical_sha256, normalize_id, utc_now
 
 MBCP_VERSION = "0.1"
 
@@ -21,6 +21,16 @@ _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 # is a safe filename component — no characters that _safe_id() would have
 # to rewrite (which made distinct ids collide on one file), no "..".
 BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+# Record-id grammar (SPEC 1.5, v0.1 audit §12 tightening): same shape as
+# the bundle-id grammar, max 128, ".." rejected. JUDGMENT CALL (worker,
+# Round C1): the class additionally permits ':' because the shipped
+# chatgpt importer's record ids are "chatgpt:<conversation-id>" and
+# importers/ is outside this batch's change set — enforcing the literal
+# SPEC class would break 25+ suite pins with no legal in-scope fix. CJK,
+# spaces, slashes and every other non-ASCII/control character are
+# rejected on both paths; the ':' residual is reported for a future
+# importer id-scheme migration.
+RECORD_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 _RECORD_SCHEMA = None
 _MANIFEST_SCHEMA = None
@@ -125,6 +135,28 @@ def _check_bundle_id_grammar(bundle_id, error_cls=None):
         )
 
 
+def _check_record_id_grammar(record_id, path, error_cls=None):
+    """Enforce the record-id grammar (SPEC 1.5, audit §12) on both paths.
+
+    Same rule as the bundle-id grammar with a 128-char bound; ``..`` is
+    rejected here (the minimal validator has no ``not`` keyword). The
+    character class mirrors the schemas' record-id pattern (which see —
+    it additionally permits ':' for the shipped importers' prefixed ids,
+    a documented Round C1 judgment call).
+    """
+    if error_cls is None:
+        error_cls = LoadValidationError
+    if (
+        not isinstance(record_id, str)
+        or not RECORD_ID_RE.match(record_id)
+        or ".." in record_id
+    ):
+        raise error_cls(
+            f"{path}.id: record id must match ^[A-Za-z0-9._:-]{{1,128}}$ "
+            f"and must not contain '..', got {record_id!r}"
+        )
+
+
 def check_sensitivity_invariant(record):
     """Machine-checkable invariant (BACKLOG M2 #6, Isaac ruling 2026-11-06).
 
@@ -154,6 +186,7 @@ def check_sensitivity_invariant(record):
 def validate_record(record):
     _schema.validate(record, _record_schema())
     _reject_hostile_values(record, "$", _schema.ValidationError)
+    _check_record_id_grammar(record["id"], "$", _schema.ValidationError)
     return check_sensitivity_invariant(record)
 
 
@@ -168,6 +201,10 @@ def validate_bundle(manifest):
     _schema.validate(manifest, _manifest_schema())
     _reject_hostile_values(manifest, "$", _schema.ValidationError)
     _check_bundle_id_grammar(manifest["bundle"]["id"], _schema.ValidationError)
+    for i, record in enumerate(manifest["records"]):
+        _check_record_id_grammar(
+            record["id"], f"$.records[{i}]", _schema.ValidationError
+        )
     return manifest
 
 
@@ -330,6 +367,9 @@ def check_record_on_load(record, path="$.records[]"):
     """
     _check(isinstance(record, dict), path, "expected object")
     _check_str(record, "id", path, min_len=1)
+    # SPEC 1.5 (audit §12): record ids carry the id grammar on the load
+    # path too (build path: validate_record/validate_bundle).
+    _check_record_id_grammar(record["id"], path)
     _check_str(record, "kind", path, min_len=1)
     # A-07 (SPEC 1.6): a non-string body is NOT malformed structure on the
     # load path — the record is DROPPED silently later in load(), not
@@ -373,11 +413,14 @@ def check_record_on_load(record, path="$.records[]"):
         f"expected one of {sorted(PRIORITY_ORDER)}",
     )
     max_chars = policy.get("max_chars")
+    # SPEC 1.5 (audit §8 tightening): max_chars is a floor of 1 on BOTH
+    # paths — 0 would zero out the whole priority class (a hostile record
+    # silently kills every critical memory in the class).
     _check(
         isinstance(max_chars, int) and not isinstance(max_chars, bool)
-        and max_chars >= 0,
+        and max_chars >= 1,
         f"{path}.mbcp.load_policy.max_chars",
-        "expected non-negative integer",
+        "expected integer >= 1",
     )
     _check(
         policy.get("on_budget_exceed") in _BUDGET_MODES,
@@ -453,14 +496,22 @@ def _resolve_duplicates(entries):
     ``entries`` is a list of (record, sort_key) already in deterministic
     order. Returns a list of (record, sort_key) winners.
 
-    Mixed merge modes (SPEC 1.1): ``error_on_conflict`` anywhere in the
-    group raises MergeConflict; else if ALL copies declare
-    ``append_last_wins`` the last copy wins; otherwise the first copy wins.
+    Groups are keyed by the NFC-normalized id (SPEC 1.5, audit §12); the
+    winning record keeps its verbatim id.
+
+    Merge modes (SPEC 1.1): ``error_on_conflict`` anywhere in the group
+    raises MergeConflict; if ALL copies declare ``append_last_wins`` the
+    last copy wins. EVERY other group — uniform ``append_first_wins`` or
+    mixed first/last, i.e. every case the old code resolved by bundle-id
+    order first-wins — resolves by the duplicate tiebreak (SPEC 1.2,
+    v0.1 audit §9 tightening): the winner is the copy with the GREATEST
+    canonical SHA-256 of the record, fully order-independent. Declared
+    modes (error / unanimous last) keep precedence over the tiebreak.
     """
     groups = {}
     order = []
     for record, key in entries:
-        rid = record["id"]
+        rid = normalize_id(record["id"])
         if rid not in groups:
             groups[rid] = []
             order.append(rid)
@@ -480,8 +531,8 @@ def _resolve_duplicates(entries):
             )
         if modes == {"append_last_wins"}:
             winners.append(group[-1])
-        else:
-            winners.append(group[0])
+            continue
+        winners.append(max(group, key=lambda rk: canonical_sha256(rk[0])))
     return winners
 
 
@@ -496,17 +547,21 @@ def load(bundles):
     1. integrity digests are verified; records whose digest does not match
        their body are dropped (SPEC 1.6)
     2. id-wide deletion pre-pass (SPEC 1.2): the ids targeted by ALL
-       tombstones from ALL bundles PLUS the ids of ALL records with
-       lifecycle="deleted" from ALL bundles are gathered BEFORE any record
-       is emitted. A record carrying such an id is excluded entirely —
-       even an active (or archived) copy of the same id in another bundle
-       cannot load. lifecycle="deleted" is thus an id-wide deletion signal,
-       treated exactly like a tombstone; lifecycle="archived" is unaffected
+       tombstones from ALL bundles PLUS the ids of records with
+       lifecycle="deleted" that PASS their integrity digest check (audit
+       §10: the id-wide signal requires an authentic copy) from ALL
+       bundles are gathered BEFORE any record is emitted. A record
+       carrying such an id is excluded entirely — even an active (or
+       archived) copy of the same id in another bundle cannot load.
+       lifecycle="deleted" is thus an id-wide deletion signal, treated
+       exactly like a tombstone; lifecycle="archived" is unaffected
     3. manifests are ordered by (bundle id, canonical SHA-256 of the
        manifest) — duplicate bundle ids get a content-digest tiebreak, so
        the result never depends on input order (SPEC 1.4)
-    4. duplicate ids merged per load_policy.merge (mixed modes:
-       error_on_conflict dominates; all-last -> last; otherwise first)
+    4. duplicate ids merged: merge modes rule (error_on_conflict anywhere
+       -> MergeConflict; unanimous append_last_wins -> last); every other
+       group resolves by the duplicate tiebreak — greatest canonical
+       SHA-256 of the record wins (SPEC 1.2, audit §9)
     5. ordered by priority (critical > standard > opportunistic), then the
        deterministic manifest position as stable tie-break
     6. max_chars is the CLASS budget: the effective budget of a priority
@@ -526,21 +581,30 @@ def load(bundles):
     # filter). Every copy of a targeted id — active, archived, deleted —
     # in ANY bundle is excluded from the result, so a bundle holding an
     # active copy of an id deleted elsewhere can never resurrect it.
+    #
+    # Integrity premise (SPEC 1.2, v0.1 audit §10 tightening, Isaac ruling
+    # 2026-11-08 — SUPERSEDES the earlier "signal survives digest-drop"
+    # reading): only a lifecycle="deleted" copy that PASSES its integrity
+    # digest check produces the id-wide signal. An unauthenticated
+    # deleted-lifecycle copy produces NO signal and is dropped like any
+    # digest-failed record — so a tampered "deleted" copy can neither
+    # exclude a live id nor, through exclusion, hide its own forgery.
+    # Both signal sets are NFC-normalized before comparison (SPEC 1.5).
     tombstoned = set()
     for manifest in manifests:
         for tombstone in manifest.get("tombstones", []):
-            tombstoned.add(tombstone["target_id"])
+            tombstoned.add(normalize_id(tombstone["target_id"]))
     deleted_ids = set()
     for manifest in manifests:
         for record in manifest.get("records", []):
-            if record.get("lifecycle") == "deleted":
-                deleted_ids.add(record["id"])
+            if record.get("lifecycle") == "deleted" and _digest_ok(record):
+                deleted_ids.add(normalize_id(record["id"]))
     excluded = tombstoned | deleted_ids
 
     entries = []
     for manifest_index, manifest in enumerate(manifests):
         for index, record in enumerate(manifest.get("records", [])):
-            if record["id"] in excluded:
+            if normalize_id(record["id"]) in excluded:
                 continue
             # A-07 (SPEC 1.6): non-string body -> silent drop, no exception
             if not isinstance(record["body"], str):

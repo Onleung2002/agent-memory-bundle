@@ -73,8 +73,9 @@
 3. **[已 pin] A-5 parse gate**：8 條 NaN-literal pins；M4c mutation 紅×5。
 4. **[範圍擴大] A-2 silent-skip**：`recover()` 對 unreadable/poisoned manifest 靜默 skip（broad `except ValueError: continue`）——typed gate 喺 reader/下游 fire（pins 已證）；修法 = skip 計數入 `_self_check` 或收窄 except。
 5. **[backlog] A-3**：毒 manifest 塞住全 root deletes（fail-closed 正確）——SECURITY.md 補 availability 句。**[backlog] A-4**：`_safe_id` 尾底線摺疊 non-injective。
-6. **[M4 Round C 待裁決]**：§3 lock/CAS、§5 L2 authorization+receipt、§6 put_bundle journal enforcement、§7/§15 ack identity+pending、§8 budget floor、§9 duplicate winner 語意、§10 id-wide 刪除通道定性、§12 record id grammar+NFC、§13 bundle inventory、§14 numeric serialization——每條帶 audit 建議修法，見 AUDIT_2026-11-08.md。
-7. **[程序] Audit 揭 M3 round-3 BACKLOG #1「無 laundering」判斷錯**（controller 當時 repro digest 相同 mask 咗問題）——該條已由今輪 HIGH#1 修復取代；記錄跟事實。
+6. **[M4 Round C 待裁決]**：§3 lock/CAS、§5 L2 authorization+receipt、§7/§15 ack identity+pending、§13 bundle inventory、§14 numeric serialization——每條帶 audit 建議修法，見 AUDIT_2026-11-08.md。（§6/§8/§9/§10/§12 已 Batch 1 修復收編；§7 pack_digest 部分同輪修、ack identity 完整修法留 Round C Batch 2。）
+7. **[已修] Round C Batch 1（88e515e）**：§6 寫入邊界拒收、§7 pack_digest 計 source_root、§8 max_chars≥1 兩邊堵、§9 duplicate tiebreak = canonical SHA-256、§10 lifecycle:deleted integrity 前提（語意反轉，Isaac 裁決）、§12 id grammar + NFC。**ADV-C1-1（backlog）**：legacy 非 ASCII id manifest 由可載入變 load-fail + recover-poison（A-3 面擴大）——要 quarantine/migrate 工具 + SPEC 句講明 rejection-closure ≠ NFC-comparison（raw layer NFC 仍 mutation-pinned）。**ADV-C1-2（backlog）**：hostile export metadata（session 檔名、conversation id 帶 `/`）而家 typed fail——fail-closed 正確，併入 id follow-up。**[`:` 裁定]**：SPEC grammar 修訂合法化 `:`（namespace prefix 正確形狀），唔做 importer id migration（會斷已持久化 tombstone 對應）。
+8. **[程序] Audit 揭 M3 round-3 BACKLOG #1「無 laundering」判斷錯**（controller 當時 repro digest 相同 mask 咗問題）——該條已由今輪 HIGH#1 修復取代；記錄跟事實。
 
 ## M4 Round A verify（2026-11-08，registry；49a44fb+8c522a0 PASS-WITH-ADVISORIES）
 1. **[registry v0.2 / Round C 分流] ADV-2 外部 record 驗證設計**：unresolvable spec_commit → schema-only（偽造數字過 pin）；更惡——偽造者可 cite 本 repo 真 commit 頂替。修法：`producer: external` 必須帶 fetchable `repo_url` + commit resolution 檢查（或明示 `count-verified: false`），並拒絕 cite 本 repo commit 嘅 external record。v0.1 可接受（registry 得一條 home record，PR review 層把關）。

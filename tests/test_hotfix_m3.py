@@ -46,7 +46,7 @@ from mbcp import (
     validate_bundle,
 )
 
-from syn import FIXED_TS, assert_raises
+from syn import FIXED_TS, assert_raises, write_bundle_direct
 
 D1 = "2026-11-01T00:00:00Z"
 D2 = "2026-11-05T00:00:00Z"
@@ -100,7 +100,9 @@ def test_repro_a_receipt_accounts_union_across_tombstone_generations():
         stale = _record("rec-X", "STALE copy", created="2019-01-01T00:00:00Z")
         stale_digest = _digest(stale)
         assert stale_digest != original_digest
-        service.put_bundle(build_bundle("bundle-stale", records=[stale]))
+        # UPDATED-PIN (M4 round C1): resurrection lands out-of-band —
+        # put_bundle rejects tombstoned-id copies (SPEC 1.2 write boundary).
+        write_bundle_direct(service, build_bundle("bundle-stale", records=[stale]))
 
         r2 = service.delete(
             "bundle-alpha",
@@ -141,8 +143,10 @@ def test_same_id_resurrection_routes_to_supersession():
         r1_file = service.receipts_dir / f"{r1['receipt']['id']}.json"
         r1_bytes = r1_file.read_bytes()
 
-        service.put_bundle(
-            build_bundle("bundle-alpha", records=[original])  # same digest back
+        # UPDATED-PIN (M4 round C1): same digest back, out-of-band
+        write_bundle_direct(
+            service,
+            build_bundle("bundle-alpha", records=[original]),  # same digest back
         )
         r2 = service.delete("bundle-alpha", "rec-X", "gdpr erasure")
 
@@ -183,8 +187,12 @@ def _split_root(tmp):
         dest, mbcp.export_propagation_pack(src, source_root="root-src", now=D2)
     )
 
-    dest.put_bundle(
-        build_bundle("db2", records=[_record("rec-X", "stale again")])
+    # UPDATED-PIN (M4 round C1): the resurrected copy lands out-of-band
+    # (put_bundle rejects tombstoned-id copies; Repro B's wedge state is
+    # precisely a producer bypassing the write boundary).
+    write_bundle_direct(
+        dest,
+        build_bundle("db2", records=[_record("rec-X", "stale again")]),
     )
     return dest
 
@@ -244,8 +252,12 @@ def test_delete_never_returns_a_self_failing_receipt():
         original_write = service._write_receipt
 
         def racing_write(*args, **kwargs):
-            service.put_bundle(
-                build_bundle("b-racer", records=[_record("rec-X", "stale copy")])
+            # UPDATED-PIN (M4 round C1): the racing writer bypasses the
+            # write boundary exactly like a real concurrent producer —
+            # put_bundle would now refuse this manifest outright.
+            write_bundle_direct(
+                service,
+                build_bundle("b-racer", records=[_record("rec-X", "stale copy")]),
             )
             return original_write(*args, **kwargs)
 
@@ -490,8 +502,10 @@ def test_receipt_id_binds_tombstone_digest():
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp, clock=lambda: D1)
         r1 = service.delete("bundle-alpha", "rec-X", "erase")
-        service.put_bundle(
-            build_bundle("bundle-stale", records=[_record("rec-X", "stale")])
+        # UPDATED-PIN (M4 round C1): resurrection out-of-band
+        write_bundle_direct(
+            service,
+            build_bundle("bundle-stale", records=[_record("rec-X", "stale")]),
         )
         r2 = service.delete(
             "bundle-alpha", "rec-X", "erase", derived_artifacts=["emb:rec-X"]

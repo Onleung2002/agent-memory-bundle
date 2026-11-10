@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mbcp import build_bundle, make_record, make_tombstone
+from mbcp import build_bundle, canonical_bytes, make_record, make_tombstone
 
 FIXED_TS = "2026-11-05T08:00:00Z"
 OWNER = "user-synthetic-01"
@@ -47,6 +47,23 @@ def syn_bundle_b():
             syn_record("rec-102", "synthetic body beta two", priority="critical"),
         ],
     )
+
+
+def write_bundle_direct(service, manifest):
+    """Simulate the out-of-band producer: write a manifest STRAIGHT into
+    ``bundles/``, bypassing ``L1DeletionService.put_bundle``.
+
+    Since M4 round C1 (SPEC 1.2 write boundary, audit §6), put_bundle
+    rejects any copy of a journal-tombstoned id, so test fixtures that
+    resurrect a deleted record must land through the same channel the
+    real attack/legacy path uses — another producer writing files
+    directly. Byte-identical to what put_bundle would have written
+    (canonical bytes), so downstream validation is unaffected.
+    """
+    path = service.bundle_path(manifest["bundle"]["id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(manifest))
+    return path
 
 
 def assert_raises(exc_type, fn, *args, **kwargs):

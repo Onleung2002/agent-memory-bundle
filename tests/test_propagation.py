@@ -52,9 +52,9 @@ DEST_ROOT_ID = "root-dest-synthetic"
 IMPORTED_AT = "2026-11-06T02:00:00Z"
 
 
-def _source_service(tmp):
+def _source_service(tmp, name="source"):
     """A source root with two bundles and two deletions in the journal."""
-    service = L1DeletionService(Path(tmp) / "source", clock=lambda: DELETED_AT)
+    service = L1DeletionService(Path(tmp) / name, clock=lambda: DELETED_AT)
     service.put_bundle(
         build_bundle(
             "bundle-alpha",
@@ -93,19 +93,30 @@ def _dest_service(tmp, name="dest"):
     return service
 
 
-def _pack(tmp, **kwargs):
-    service = _source_service(tmp)
+def _pack(tmp, name="source", **kwargs):
+    """Export a pack from a fresh source root at <tmp>/<name>.
+
+    (Round C1: two exports of the SAME journal state must use DIFFERENT
+    directories — the write boundary now refuses to re-put manifests whose
+    records carry tombstoned ids, which is exactly what a second _pack on
+    one root would attempt.)
+    """
+    service = _source_service(tmp, name)
+    kwargs.setdefault("source_root", SOURCE_ROOT_ID)
     return export_propagation_pack(
-        service, source_root=SOURCE_ROOT_ID, now=FIXED_TS, **kwargs
+        service, now=FIXED_TS, **kwargs
     )
 
 
 # -- export -----------------------------------------------------------------
 
 def test_export_pack_is_deterministic_byte_identical():
+    # Same journal state built in two separate roots (the write boundary
+    # forbids re-putting tombstoned-id manifests into one root), explicit
+    # source_root -> byte-identical packs.
     with tempfile.TemporaryDirectory() as tmp:
-        pack1 = _pack(tmp)
-        pack2 = _pack(tmp)
+        pack1 = _pack(tmp, "source-1")
+        pack2 = _pack(tmp, "source-2")
     assert canonical_bytes(pack1) == canonical_bytes(pack2)
 
 
@@ -115,12 +126,49 @@ def test_export_pack_digest_chain_verifies():
     body = pack["pack"]
     digests = sorted(canonical_sha256(t) for t in body["tombstones"])
     assert body["tombstone_digests"] == digests
-    assert body["pack_digest"] == canonical_sha256(digests)
+    # Round C1 (SPEC §2 audit-tightening, audit §7): the pack digest binds
+    # the source root AND the sorted tombstone digest list.
+    assert body["pack_digest"] == canonical_sha256({
+        "source_root": SOURCE_ROOT_ID,
+        "tombstone_digests": digests,
+    })
     assert body["attestation"]["pack_digest"] == body["pack_digest"]
     assert body["attestation"]["source_root"] == SOURCE_ROOT_ID
     assert body["attestation"]["issued_at"] == FIXED_TS
     assert pack["integrity"]["digest"] == canonical_sha256(body)
     assert {t["target_id"] for t in body["tombstones"]} == {"rec-002", "rec-003"}
+
+
+def test_same_tombstone_set_from_two_roots_is_different_packs():
+    # audit §7 probe: two source roots holding the SAME tombstone set must
+    # produce DIFFERENT pack digests, land on DIFFERENT ack paths, and
+    # each ack must name its own for_source_root — the ack-attribution
+    # collision across roots is closed.
+    with tempfile.TemporaryDirectory() as tmp:
+        pack_a = _pack(tmp, "source-a", source_root="root-a")
+        pack_b = _pack(tmp, "source-b", source_root="root-b")
+        assert (
+            [t["target_id"] for t in pack_a["pack"]["tombstones"]]
+            == [t["target_id"] for t in pack_b["pack"]["tombstones"]]
+        )
+        assert pack_a["pack"]["pack_digest"] != pack_b["pack"]["pack_digest"]
+
+        dest = _dest_service(tmp, "dest")
+        ack_a = import_propagation_pack(dest.root, pack_a, now=IMPORTED_AT)
+        ack_b = import_propagation_pack(dest.root, pack_b, now=IMPORTED_AT)
+
+        assert ack_a["ack"]["pack_digest"] == pack_a["pack"]["pack_digest"]
+        assert ack_b["ack"]["pack_digest"] == pack_b["pack"]["pack_digest"]
+        assert ack_a["ack"]["for_source_root"] == "root-a"
+        assert ack_b["ack"]["for_source_root"] == "root-b"
+        # separate ack artifacts, keyed by pack_digest[:16]
+        assert pack_a["pack"]["pack_digest"][:16] != pack_b["pack"]["pack_digest"][:16]
+        for pack in (pack_a, pack_b):
+            ack_path = (
+                dest.root / "propagation" / "acks"
+                / f"{pack['pack']['pack_digest'][:16]}.json"
+            )
+            assert ack_path.exists()
 
 
 def test_export_pack_target_ids_filter():
@@ -179,7 +227,7 @@ def test_import_rejects_missing_attestation():
 def test_import_rejects_attestation_bound_to_other_pack():
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
-        other = _pack(tmp, target_ids=["rec-002"])
+        other = _pack(tmp, "other-source", target_ids=["rec-002"])
         forged = json.loads(json.dumps(pack))
         forged["pack"]["attestation"] = other["pack"]["attestation"]
         forged["integrity"]["digest"] = canonical_sha256(forged["pack"])
@@ -255,11 +303,13 @@ def test_import_is_idempotent_no_new_journal_lines_same_ack():
 
 
 def _reversed_pack(pack):
-    """Same tombstones in reverse pack order (integrity recomputed)."""
+    """Same tombstones in reverse pack order (integrity recomputed).
+
+    The pack digest binds (source_root, SORTED tombstone digest list), so
+    reordering the tombstones leaves it unchanged."""
     body = json.loads(json.dumps(pack["pack"]))
     body["tombstones"] = list(reversed(body["tombstones"]))
     body["tombstone_digests"] = [canonical_sha256(t) for t in body["tombstones"]]
-    # pack_digest is over the SORTED digest list: unchanged by reordering.
     return {
         "pack": body,
         "integrity": {"algo": "sha256", "digest": canonical_sha256(body)},

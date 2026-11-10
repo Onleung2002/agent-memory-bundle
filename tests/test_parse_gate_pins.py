@@ -20,7 +20,7 @@ Controller-authored test-only micro-commit (Isaac ruling 2026-11-08).
 import json
 from pathlib import Path
 
-from syn import assert_raises, syn_record
+from syn import assert_raises, syn_record, write_bundle_direct
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -82,8 +82,9 @@ def test_nan_literal_in_removal_evidence_fails_verify_typed():
 def test_nan_literal_in_recovery_log_fails_reader_typed():
     svc = _svc()
     svc.delete("b1", "r1", "user request")
-    # create a recovery entry: resurrect a stale copy, then recover it
-    svc.put_bundle(build_bundle("b2", records=[syn_record("r1", "STALE")]))
+    # create a recovery entry: resurrect a stale copy (out-of-band since
+    # M4 round C1 — put_bundle rejects tombstoned-id copies), recover it
+    write_bundle_direct(svc, build_bundle("b2", records=[syn_record("r1", "STALE")]))
     svc.recover()
     assert svc.recovery_path.exists()
     lines = _lines(svc.recovery_path)
