@@ -86,6 +86,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from mbcp import (  # public API only
     L1DeletionService,
     canonical_bytes,
+    canonical_sha256,
     export_propagation_pack,
     import_bundle,
     import_propagation_pack,
@@ -254,6 +255,20 @@ def _check_propagate(scenario, expect):
     return failures
 
 
+def _check_inventory_key(service, expect, failures):
+    """The digests compare mode gains the inventory_digest (audit §13):
+    ``expect["digests"]["@inventory"]`` is the expected canonical digest
+    of the root's LIVE sorted bundle-id set. Cross-root reconciliation
+    can then pin store-set divergence in a scenario the same way per-id
+    record digests pin record content."""
+    want = expect.get("digests", {}).get("@inventory")
+    if want is None:
+        return
+    got = canonical_sha256(service.bundle_inventory())
+    if got != want:
+        failures.append(f"inventory_digest: want {want}, got {got}")
+
+
 def _put_resurrect_bundle(service, manifest):
     """Land a resurrection manifest OUT-OF-BAND (write bundles/ directly).
 
@@ -328,6 +343,40 @@ def _check_supersede(scenario, expect):
                     f"superseded receipt ok={check['ok']}, want "
                     f"{expect['old_receipt_ok']} (whitewash)"
                 )
+
+        # Receipt store-set inventory (audit §13, M4 round C2): bundles
+        # added to the root AFTER the deletion do not falsify the receipt
+        # (it is a historical record, default check stays ok), but the
+        # opt-in check_inventory=True fails closed naming the divergent
+        # ids, and the live store-set digest joins the digests mode under
+        # the "@inventory" key.
+        for manifest in inp.get("post_bundles", []):
+            service.put_bundle(manifest)
+        if "inventory_history_ok" in expect:
+            check = service.verify_receipt(retried)
+            if check["ok"] != expect["inventory_history_ok"]:
+                failures.append(
+                    f"receipt after store growth ok={check['ok']}, want "
+                    f"{expect['inventory_history_ok']}: {check['problems']}"
+                )
+        if "check_inventory_ok" in expect:
+            check = service.verify_receipt(retried, check_inventory=True)
+            if check["ok"] != expect["check_inventory_ok"]:
+                failures.append(
+                    f"check_inventory ok={check['ok']}, want "
+                    f"{expect['check_inventory_ok']}: {check['problems']}"
+                )
+            if not check["ok"] and expect.get("inventory_divergence_names"):
+                if not any(
+                    expect["inventory_divergence_names"] in p
+                    for p in check["problems"]
+                ):
+                    failures.append(
+                        "check_inventory problems do not name the divergent "
+                        f"bundle id {expect['inventory_divergence_names']!r}: "
+                        f"{check['problems']}"
+                    )
+        _check_inventory_key(service, expect, failures)
 
         # a no-growth retry must return the chain tail and write nothing
         again = service.delete(*args)

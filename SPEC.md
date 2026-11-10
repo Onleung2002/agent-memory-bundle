@@ -54,6 +54,36 @@ L1 receipt 係 immutable artifact——`recover()` 移除咗 receipt 未報告�
 ### 1.2.2 Receipt supersession（v0.1）
 `deletion-receipt.v0` 加 optional `supersedes`（被取代 receipt 嘅 `receipt_digest`，hex64）。Supersession 只有一個觸發位：`delete()` retry 喺 under-report 狀態（`verify_receipt ok:false` 因 evidence/recovery 增長）自動 re-issue 新 receipt 並指向舊 receipt。`verify_receipt` 對 superseded receipt：chain 完整（每個 supersedes 指向真實存在且 digest 相符嘅 receipt）而 chain 尾 receipt accounting 覆蓋全部已知 removal → `ok:true`；chain 斷裂（指向唔存在/mismatch 嘅 receipt）→ `ok:false`。Receipt 仍然 immutable——re-issue 係寫新 receipt，唔係改舊 receipt。
 
+### 1.2.3 Root lock（v0.1 audit 收緊：§3 racing writers）
+
+> All mutations of a service root by `delete()`, `recover()`, and propagation intake are serialized under a
+> bounded re-entrant advisory lock (`flock LOCK_EX` on `<root>/.mbcp.lock`; `lock_timeout`, default 10 s;
+> expiry raises the typed `LockTimeoutError`). This is a serialization/liveness guarantee among cooperating
+> writers, NOT a security boundary: the lock is advisory, the OS releases it if a holder crashes, and removing
+> the lock file while held voids cross-process exclusion. Same-process re-entrancy (nested locked calls on one
+> thread) is enforced by a per-root owner plus condition variable with a per-thread held count, and never
+> self-deadlocks. `put_bundle` is NOT yet under the lock (known residual — ADV-C2-3).
+
+### 1.2.4 Receipt store inventory（v0.1 audit 收緊：§13）
+
+> Every deletion receipt records an `inventory` block: the sorted list of ALL bundle ids in the service root
+> immediately before the deletion, and the canonical SHA-256 of that sorted list (order-independent by
+> construction). `verify_receipt` always checks the block's internal consistency; a receipt without the block
+> fails the revised schema (receipts issued before this revision are invalid — breaking by design).
+> `verify_receipt(check_inventory=True)` additionally compares the recorded set to the store's CURRENT live id
+> set (point-in-time reconciliation) and fails closed naming added and missing ids. The default remains OFF: a
+> receipt is a historical record and store growth after issuance does not falsify it. A bare
+> `build_receipt` call without store context records the EMPTY set; service-issued receipts always record the
+> real pre-deletion set.
+
+### 1.2.5 Recovery error split（v0.1 audit 收緊：A-2 closure）
+
+> `recover()` never silently ignores a bundle manifest: genuinely unreadable entries (`OSError`/`KeyError` —
+> directory-shaped, permissions, vanished) are skipped and counted in `last_recovery_skipped_unreadable`
+> (reset at the start of each run); malformed content (`TypeError`/`ValueError`, including non-finite JSON
+> constants) raises a typed `DeletionError` naming the file. The delete/verify scan is fail-closed: any
+> unreadable manifest raises typed and is never treated as absent.
+
 ### 1.3 consent 繼承（UMP）+ 跨 profile 一致
 UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：consent 違反 = conformance fail（唔係 warning）。
 

@@ -71,7 +71,7 @@
 1. **[已修] HIGH×2 + §4 + §11**：receipt accounting 綁 target 唔綁世代、delete() 全 return path self-verify、surrogate/NaN typed + wedge 消除、bundle.id grammar + collision refuse。詳見 docs/AUDIT_2026-11-08.md 逐項表。
 2. **[已修] A-1 fresh-path id collision**：同 bundle resuscitate overwrite 路由 `_reissue_receipt`（supersession）；ATK1-3 pinned（含 ATK3 兩 mode + 恰好一個 tail）。
 3. **[已 pin] A-5 parse gate**：8 條 NaN-literal pins；M4c mutation 紅×5。
-4. **[範圍擴大] A-2 silent-skip**：`recover()` 對 unreadable/poisoned manifest 靜默 skip（broad `except ValueError: continue`）——typed gate 喺 reader/下游 fire（pins 已證）；修法 = skip 計數入 `_self_check` 或收窄 except。
+4. **[已收编 C2，前提勘誤] A-2**：brief/舊 pin 嗰句「recover() broad except 靜默 skip」premise 係 stale——d0dfa48 起 recover 對 malformed 已 typed raise；舊 pin 係 **vacuous**（delete 先 raise → journal 空 → recover 冇讀毒檔；instrumented parent 核實）。真正 delta（151997d）= OSError/KeyError skip+count（`last_recovery_skipped_unreadable`）、TypeError typed wrap、delete-scan OSError typed、NaN pin 改 non-empty journal 語意。唔寫「C2 消滅 silent skip」。
 5. **[backlog] A-3**：毒 manifest 塞住全 root deletes（fail-closed 正確）——SECURITY.md 補 availability 句。**[backlog] A-4**：`_safe_id` 尾底線摺疊 non-injective。
 6. **[M4 Round C 待裁決]**：§3 lock/CAS、§5 L2 authorization+receipt、§7/§15 ack identity+pending、§13 bundle inventory、§14 numeric serialization——每條帶 audit 建議修法，見 AUDIT_2026-11-08.md。（§6/§8/§9/§10/§12 已 Batch 1 修復收編；§7 pack_digest 部分同輪修、ack identity 完整修法留 Round C Batch 2。）
 7. **[已修] Round C Batch 1（88e515e）**：§6 寫入邊界拒收、§7 pack_digest 計 source_root、§8 max_chars≥1 兩邊堵、§9 duplicate tiebreak = canonical SHA-256、§10 lifecycle:deleted integrity 前提（語意反轉，Isaac 裁決）、§12 id grammar + NFC。**ADV-C1-1（backlog）**：legacy 非 ASCII id manifest 由可載入變 load-fail + recover-poison（A-3 面擴大）——要 quarantine/migrate 工具 + SPEC 句講明 rejection-closure ≠ NFC-comparison（raw layer NFC 仍 mutation-pinned）。**ADV-C1-2（backlog）**：hostile export metadata（session 檔名、conversation id 帶 `/`）而家 typed fail——fail-closed 正確，併入 id follow-up。**[`:` 裁定]**：SPEC grammar 修訂合法化 `:`（namespace prefix 正確形狀），唔做 importer id migration（會斷已持久化 tombstone 對應）。
@@ -82,6 +82,13 @@
 2. **[已 pin] ADV-1**：`record_generated_at` 對 spec_commit git committer date（reg_06）；**[已 pin] ADV-3**：術語法 grep pin（reg_07——dual needle：`certificat-` 同 `certified`，後者唔包前者 root，M3 mutation 首跑揭 pin 自身漏「certified」）；**[已 pin] ADV-4**：所有 schemas `additionalProperties:false` meta-pin（reg_08）。三 mutation 重跑全紅。
 3. **[已修] ADV-5**：REGISTRY.md「quoted verbatim」→「authorized English rendering」。
 4. **[裁定記錄]**：worker reject controller 嘅 HEAD-coupling anti-drift 設計，GLM verifier ENDORSED（HEAD-coupled check 係 self-reference 死代碼；commit-coupled 令歷史記錄永遠可驗）——brief 設計錯、worker 修正對。
+
+## M4 Round C Batch 2 verify（2026-11-10，151997d PASS-WITH-ADVISORIES，7/7 mutations 零 false-green）
+1. **[已修] ADV-C2-1**：lock comment/commit message 嗰句「flock 同 process 兩個 fd 互斥唔生效」係錯（kernel probe：separate open() fd 會互斥；dup'd fd 共享）——設計必要性係 re-entrancy（同 thread nested 鎖會 self-block）唔係互斥失效。comment 已改正（kernel 語意寫啱）。
+2. **[C2 決策] A-2 收法**：雙管（收窄 except + skip 計數可見），verifier instrumented parent 核實 vacuous-pin 勘誤屬實。
+3. **[backlog] ADV-C2-3**：`put_bundle`/`export_propagation_pack` 繞過 root lock——non-target bundle mid-delete → receipt 出世就 inventory-divergent（自己 check_inventory=True fail）；target-copy mid-delete fail-closed。無 corruption/假 receipt，LOW-MEDIUM liveness/semantic wart。**Batch 3 收**（鎖 put_bundle 或 inventory 改 final re-read）。
+4. **[backlog] ADV-C2-4**：`.mbcp.lock` 被 unlink while held → 之後嘅新 process 鎖新 inode，跨 process 互斥 void（inherent advisory-lock 屬性）；in-process gating 唔受影響。SPEC §1.2.3 已一句講明。
+5. **[裁定]**：bare `build_receipt(inventory=None)` 記空 set severity = LOW（唔新增洗白路徑，unsigned-receipt 限制先前已有；inventory 嚴格只加證據）；pre-C2 receipts schema-invalid breaking by design，無 committed artifact 受影響。
 
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。

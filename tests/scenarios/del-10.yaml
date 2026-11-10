@@ -1,0 +1,105 @@
+{
+  "id": "DEL-10",
+  "spec_version": "0.1",
+  "title": "receipt inventory binds the deletion-time store set; check_inventory flags later divergence",
+  "op": "supersede",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "bundle-alpha"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-002",
+            "kind": "fact",
+            "body": "synthetic body alpha two",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "00d99e8836ac10910e2e11a9736ab64c7d6b18d3af63ae91ee314daff409c04d"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ],
+    "delete": {
+      "bundle_id": "bundle-alpha",
+      "target_id": "rec-002",
+      "reason": "synthetic erasure"
+    },
+    "post_bundles": [
+      {
+        "bundle": {
+          "id": "bundle-gamma"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-700",
+            "kind": "fact",
+            "body": "synthetic body gamma",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "228e79a77ee6e394bbc031f725fad4754b99399678ccc8ebc966c837e9b819bc"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "tail_ok": true,
+    "final_receipt_count": 1,
+    "inventory_history_ok": true,
+    "check_inventory_ok": false,
+    "inventory_divergence_names": "bundle-gamma",
+    "digests": {
+      "@inventory": "8044dea4f6da6fc4535ade960cde9bbbf4edcd904a799a63901811f3a859e5b1"
+    }
+  }
+}

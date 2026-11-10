@@ -41,6 +41,19 @@ On-disk layout of a service root::
     evidence/<sha256(id)>.json   # per-target removal evidence (digests)
     recovery.jsonl               # recovery log: digest copies removed by recover()
     receipts/<receipt-id>.json   # L1 erasure receipts
+    .mbcp.lock                   # root advisory lock file (flock; never data)
+
+Root advisory lock (audit §3): :meth:`L1DeletionService.delete`,
+:meth:`L1DeletionService.recover` and propagation intake
+(:func:`mbcp.propagation.import_propagation_pack`) hold an exclusive
+``fcntl.flock`` on ``.mbcp.lock`` for their whole duration, so two
+processes (or threads) sharing one service root cannot interleave
+journal/manifest writes. Acquisition is bounded by a ``lock_timeout``
+parameter (default :data:`DEFAULT_LOCK_TIMEOUT` seconds); a timeout
+raises the typed :class:`LockTimeoutError` — never a silent retry.
+Same-process nested acquisition is re-entrant (per-thread held count),
+so a locked call may internally invoke another locked call; the OS
+releases the flock automatically if a holder crashes.
 
 Receipt vs recovery semantics (BACKLOG M2 #4, verify round 2 advisory 2):
 
@@ -86,11 +99,14 @@ copies, broken chains, tampered receipts, unreadable journals, or a
 receipt-file collision whose chain tail cannot be resolved).
 """
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 from . import _schema
@@ -152,6 +168,116 @@ class BundleIdCollisionError(DeletionError):
     """
 
 
+class LockTimeoutError(DeletionError):
+    """Raised when the root advisory lock cannot be acquired in time.
+
+    Audit §3: lock acquisition is bounded (``lock_timeout``, default
+    :data:`DEFAULT_LOCK_TIMEOUT` seconds). A caller that cannot get the
+    root lock within the bound gets this typed error — never a silent
+    retry-forever and never an unbounded block.
+    """
+
+
+LOCK_FILE_NAME = ".mbcp.lock"
+DEFAULT_LOCK_TIMEOUT = 10.0
+
+# In-process lock table: canonical root path -> {"owner": thread ident or
+# None, "fh": open lock-file handle or None, "cond": Condition}.
+# fcntl.flock locks are per open-file-description: separate open() fds (even
+# within one process) DO exclude each other, while dup'd fds share the lock.
+# flock alone therefore cannot express this design's requirements — the
+# process-level owner + condition variable exists for RE-ENTRANCY (a
+# same-thread nested locked call on a fresh fd would otherwise self-block →
+# LockTimeoutError) and cross-thread fairness, not because flock fails to
+# exclude. At most one thread per root owns the flock; the rest wait on the
+# condition variable.
+_ROOT_LOCK_TABLE = {}
+_ROOT_LOCK_TABLE_GUARD = threading.Lock()
+_ROOT_LOCK_TLS = threading.local()
+
+
+def _tls_held():
+    held = getattr(_ROOT_LOCK_TLS, "held", None)
+    if held is None:
+        held = {}
+        _ROOT_LOCK_TLS.held = held
+    return held
+
+
+class _RootLock:
+    """Re-entrant bounded root advisory lock (context manager).
+
+    First acquisition by any thread of this process for a given root
+    opens ``<root>/.mbcp.lock`` and takes ``flock(LOCK_EX)`` with a
+    bounded spin (``lock_timeout``); a nested acquisition by the SAME
+    thread just bumps a per-thread held count (delete()/recover()/
+    propagation intake may nest through the service). Another thread —
+    here or in another process — waits; past the deadline it gets
+    :class:`LockTimeoutError`. The lock file lives at the service-root
+    dotfile, outside every scanner namespace (``bundles/``,
+    ``receipts/``, the journals are explicit paths).
+    """
+
+    def __init__(self, root, timeout):
+        self._key = str(Path(root).resolve())
+        self._timeout = float(timeout)
+        self._entry = None
+
+    def __enter__(self):
+        held = _tls_held()
+        if held.get(self._key, 0) > 0:
+            # Same thread re-entering an already-held root lock.
+            held[self._key] += 1
+            return self
+        deadline = time.monotonic() + self._timeout
+        with _ROOT_LOCK_TABLE_GUARD:
+            entry = _ROOT_LOCK_TABLE.get(self._key)
+            if entry is None:
+                entry = {"owner": None, "fh": None, "cond": None}
+                _ROOT_LOCK_TABLE[self._key] = entry
+            if entry["cond"] is None:
+                entry["cond"] = threading.Condition(_ROOT_LOCK_TABLE_GUARD)
+        while True:
+            with entry["cond"]:
+                if entry["owner"] is None:
+                    if entry["fh"] is None:
+                        lock_path = Path(self._key) / LOCK_FILE_NAME
+                        lock_path.parent.mkdir(parents=True, exist_ok=True)
+                        entry["fh"] = open(lock_path, "a+b")
+                    try:
+                        fcntl.flock(entry["fh"].fileno(),
+                                    fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        pass  # another PROCESS holds it; wait below
+                    else:
+                        entry["owner"] = threading.get_ident()
+                        held[self._key] = 1
+                        return self
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LockTimeoutError(
+                        f"could not acquire service-root lock {self._key}/"
+                        f"{LOCK_FILE_NAME} within {self._timeout:g}s "
+                        "(another writer holds the root; retry or raise "
+                        "the lock_timeout)"
+                    )
+                entry["cond"].wait(timeout=min(0.05, remaining))
+
+    def __exit__(self, exc_type, exc, tb):
+        held = _tls_held()
+        remaining = held[self._key] - 1
+        if remaining > 0:
+            held[self._key] = remaining
+            return False
+        del held[self._key]
+        with _ROOT_LOCK_TABLE_GUARD:
+            entry = _ROOT_LOCK_TABLE[self._key]
+            fcntl.flock(entry["fh"].fileno(), fcntl.LOCK_UN)
+            entry["owner"] = None
+            entry["cond"].notify()
+        return False
+
+
 _RECEIPT_SCHEMA = None
 
 
@@ -199,6 +325,17 @@ def _safe_id(value):
     return SAFE_ID_RE.sub("_", value).strip("_") or "bundle"
 
 
+def inventory_digest(bundle_ids):
+    """Canonical SHA-256 over the SORTED bundle-id list (audit §13).
+
+    Order-independent by construction (the input is sorted here): the
+    digest binds the SET of bundles that constituted the store, so a
+    laundered/resurrected sibling bundle changes the digest even though
+    no receipt field naming records would.
+    """
+    return canonical_sha256(sorted(bundle_ids))
+
+
 def _validate_receipt(receipt):
     try:
         _schema.validate(receipt, _receipt_schema())
@@ -224,12 +361,28 @@ def _is_growth_underreport(problems):
 
 
 def build_receipt(
-    bundle_id, tombstone, removed_records, *, issued_at=None, supersedes=None
+    bundle_id,
+    tombstone,
+    removed_records,
+    *,
+    issued_at=None,
+    supersedes=None,
+    inventory=None,
 ):
     """Build a schema-valid L1 receipt dict (with self-digest).
 
     ``removed_records`` is a list of record dicts that were removed in this
     deletion; only their id + integrity digest are retained in the receipt.
+
+    ``inventory`` (audit §13) is the list of bundle ids that constituted
+    the store root at deletion time; it is recorded (sorted, with a
+    canonical digest over the sorted list) in the receipt's ``inventory``
+    block so the receipt is bound to the exact store SET, not just to the
+    removed records. Service-issued receipts always pass the real
+    pre-deletion store set; a bare ``build_receipt`` call without a store
+    context defaults to the empty set (schema-valid, and
+    ``verify_receipt(check_inventory=True)`` then reports divergence
+    against any non-empty live store).
 
     ``supersedes`` (SPEC 1.2.2) is the ``integrity.digest`` of the receipt
     this receipt supersedes — a re-issued receipt is a FRESH immutable
@@ -256,6 +409,7 @@ def build_receipt(
     receipt_id = "rcpt-" + hashlib.sha256(
         canonical_bytes(id_preimage)
     ).hexdigest()[:16]
+    bundle_set = sorted(inventory or [])
     body = {
         "id": receipt_id,
         "spec_version": "0.1",
@@ -270,6 +424,10 @@ def build_receipt(
             {"id": record["id"], "digest": record["integrity"]["digest"]}
             for record in removed_records
         ],
+        "inventory": {
+            "bundle_set": bundle_set,
+            "inventory_digest": inventory_digest(bundle_set),
+        },
         "derived_artifacts": list(tombstone.get("derived_artifacts", [])),
         # L1 cannot prove L3: recorded, not verified. Never flip this in L1.
         "derived_artifacts_verified": False,
@@ -296,6 +454,24 @@ class L1DeletionService:
         self.recovery_path = self.root / "recovery.jsonl"
         self.receipts_dir = self.root / "receipts"
         self._clock = clock
+        # A-2 visibility: number of genuinely-unreadable bundle files
+        # recover() skipped in its MOST RECENT run (0 before the first
+        # run and after any run with no skips). Never silent.
+        self.last_recovery_skipped_unreadable = 0
+
+    def _root_lock(self, timeout=DEFAULT_LOCK_TIMEOUT):
+        """Bounded re-entrant advisory lock on this service root (audit §3)."""
+        return _RootLock(self.root, timeout)
+
+    def bundle_inventory(self):
+        """Sorted bundle-id list of every manifest in the store (live state).
+
+        The input to :func:`inventory_digest`; fail-closed like every
+        other store scan (a corrupt manifest raises the typed
+        :class:`DeletionError`, never a silent partial inventory — a
+        partial set would launder a divergence).
+        """
+        return sorted({bid for bid, _p, _m in self._bundle_manifests()})
 
     # -- bundles ----------------------------------------------------------
     def put_bundle(self, manifest):
@@ -395,6 +571,15 @@ class L1DeletionService:
         for path in sorted(self.bundles_dir.glob("*.json")):
             try:
                 manifest = json_loads_strict(path.read_text(encoding="utf-8"))
+            except OSError as err:
+                # Fail-closed and typed (audit §11): a genuinely unreadable
+                # entry (directory-shaped, permissions, vanished mid-scan)
+                # is loud here — delete()/verify must never treat a hidden
+                # manifest as absent (it could hold a live copy of a
+                # deletion target). recover() is the tolerant path.
+                raise DeletionError(
+                    f"unreadable bundle manifest {path}: {err}"
+                ) from err
             except ValueError as err:
                 raise DeletionError(
                     f"corrupt bundle manifest {path}: {err}"
@@ -624,6 +809,7 @@ class L1DeletionService:
         *,
         derived_artifacts=(),
         now=None,
+        lock_timeout=DEFAULT_LOCK_TIMEOUT,
     ):
         """Delete ``target_id`` from the service root (L1), returning the receipt.
 
@@ -653,7 +839,35 @@ class L1DeletionService:
         is already gone everywhere, the existing receipt is returned as-is:
         new ``derived_artifacts`` are not recorded for an already-finished
         deletion (issue a new delete after resuscitation if they matter).
+
+        The whole operation runs under the root advisory lock (audit §3):
+        racing writers on one service root cannot interleave
+        journal/manifest writes. ``lock_timeout`` bounds the wait for the
+        lock; a timeout raises :class:`LockTimeoutError` (typed, never a
+        silent retry). The receipt records the pre-deletion store
+        inventory (audit §13) — the sorted set of bundle ids present in
+        the root at delete time — so the receipt binds to the exact store
+        SET, not only to the removed records.
         """
+        with self._root_lock(lock_timeout):
+            return self._delete_locked(
+                bundle_id,
+                target_id,
+                reason,
+                derived_artifacts=derived_artifacts,
+                now=now,
+            )
+
+    def _delete_locked(
+        self,
+        bundle_id,
+        target_id,
+        reason,
+        *,
+        derived_artifacts=(),
+        now=None,
+    ):
+        """Locked body of :meth:`delete` (runs under the root advisory lock)."""
         # Both ids flow into canonical_bytes (receipt id preimage,
         # evidence path digest); a lone surrogate would crash untyped
         # (audit §11) — reject loudly at the boundary.
@@ -675,6 +889,10 @@ class L1DeletionService:
         # state is untouched (audit §11: no mid-flight UnicodeEncodeError
         # after tombstone+evidence are durable).
         bundles = self._bundle_manifests()
+        # Pre-deletion store inventory (audit §13): the sorted bundle-id
+        # set this receipt will be bound to. The scan above ran BEFORE any
+        # rewrite, so this is exactly the deletion-time store SET.
+        store_inventory = sorted({bid for bid, _p, _m in bundles})
         present = [
             (bid, record)
             for bid, _path, manifest in bundles
@@ -687,7 +905,8 @@ class L1DeletionService:
 
         if not present:
             return self._delete_with_nothing_present(
-                bundle_id, target_id, journal_entries, now=now
+                bundle_id, target_id, journal_entries, now=now,
+                inventory=store_inventory,
             )
 
         # 1. durable tombstone FIRST — a crash below can only over-delete.
@@ -768,6 +987,7 @@ class L1DeletionService:
             self._known_removals(target_id),
             now=now,
             reissue_on_id_collision=True,
+            inventory=store_inventory,
         )
 
     def _ensure_journal_tombstone(self, tombstone, journal_entries):
@@ -781,7 +1001,7 @@ class L1DeletionService:
         if not any(t == tombstone for t in journal_entries):
             self._append_journal(tombstone)
 
-    def _delete_with_nothing_present(self, bundle_id, target_id, journal_entries, *, now=None):
+    def _delete_with_nothing_present(self, bundle_id, target_id, journal_entries, *, now=None, inventory=None):
         """Handle a delete whose target is already absent from every bundle."""
         if not journal_entries:
             raise UnknownTargetError(
@@ -803,7 +1023,8 @@ class L1DeletionService:
                 # raising. Any other failure stays DeletionIncompleteError.
                 self._ensure_journal_tombstone(tombstone, journal_entries)
                 return self._reissue_receipt(
-                    bundle_id, target_id, existing, tombstone, now=now
+                    bundle_id, target_id, existing, tombstone, now=now,
+                    inventory=inventory,
                 )
             raise DeletionIncompleteError(
                 f"existing receipt for {target_id!r} does not verify "
@@ -819,7 +1040,9 @@ class L1DeletionService:
                 f"target {target_id!r} is absent but no removal evidence was "
                 "recorded; refusing to issue a receipt"
             )
-        return self._write_receipt(bundle_id, tombstone, removed, now=now)
+        return self._write_receipt(
+            bundle_id, tombstone, removed, now=now, inventory=inventory
+        )
 
     def _underreport_due_to_growth(self, receipt):
         """Precise re-issue predicate (SPEC 1.2.2): the receipt names a
@@ -844,7 +1067,7 @@ class L1DeletionService:
         known = recorded | recovered
         return claimed <= known and known > claimed
 
-    def _reissue_receipt(self, bundle_id, target_id, old_receipt, tombstone, *, now=None):
+    def _reissue_receipt(self, bundle_id, target_id, old_receipt, tombstone, *, now=None, inventory=None):
         """Write a fresh receipt superseding ``old_receipt`` (SPEC 1.2.2).
 
         The new receipt names EVERY removal known to the service root for
@@ -860,6 +1083,7 @@ class L1DeletionService:
             removed,
             issued_at=now or self._clock(),
             supersedes=old_receipt["integrity"]["digest"],
+            inventory=inventory,
         )
         self._self_check(receipt)
         path = self.receipts_dir / f"{receipt['receipt']['id']}.json"
@@ -892,6 +1116,7 @@ class L1DeletionService:
         *,
         now=None,
         reissue_on_id_collision=False,
+        inventory=None,
     ):
         """Write a freshly built receipt, self-checked (audit HIGH#2).
 
@@ -911,7 +1136,8 @@ class L1DeletionService:
         (:class:`DeletionIncompleteError`).
         """
         receipt = build_receipt(
-            bundle_id, tombstone, removed_records, issued_at=now or self._clock()
+            bundle_id, tombstone, removed_records, issued_at=now or self._clock(),
+            inventory=inventory,
         )
         path = self.receipts_dir / f"{receipt['receipt']['id']}.json"
         if reissue_on_id_collision and path.exists():
@@ -924,7 +1150,8 @@ class L1DeletionService:
                     "refusing to overwrite an existing immutable receipt"
                 )
             return self._reissue_receipt(
-                bundle_id, target_id, tail, tombstone, now=now
+                bundle_id, target_id, tail, tombstone, now=now,
+                inventory=inventory,
             )
         self._self_check(receipt)
         _atomic_write(path, canonical_bytes(receipt))
@@ -989,7 +1216,7 @@ class L1DeletionService:
         return pool[-1]
 
     # -- recovery ---------------------------------------------------------
-    def recover(self):
+    def recover(self, *, lock_timeout=DEFAULT_LOCK_TIMEOUT):
         """Replay the journal onto every manifest (crash recovery).
 
         Returns the list of record ids removed during recovery. This is the
@@ -1004,27 +1231,45 @@ class L1DeletionService:
         (i), see module docstring). Idempotent: a second ``recover()`` on
         consistent state finds nothing to remove, writes nothing, and
         returns ``[]``.
+
+        A-2 closure (audit, 2026-11-08): per-file error handling is split —
+        genuinely UNREADABLE entries (``OSError``: directory-shaped entry,
+        permissions, vanished mid-scan) are SKIPPED and counted in
+        :attr:`last_recovery_skipped_unreadable` (visible, never silent);
+        MALFORMED content (``TypeError``/``ValueError``, including
+        :class:`~mbcp.canonical.NonFiniteConstantError` NaN/Infinity
+        poison) raises the typed :class:`DeletionError` naming the file —
+        never a silent skip, and already-typed errors propagate as-is.
+        The whole run holds the root advisory lock (audit §3); nested
+        acquisition via propagation intake is re-entrant.
         """
+        with self._root_lock(lock_timeout):
+            return self._recover_locked()
+
+    def _recover_locked(self):
+        """Locked body of :meth:`recover`."""
+        self.last_recovery_skipped_unreadable = 0
         journal = _merge_tombstones(self.journal_tombstones())
         if not journal or not self.bundles_dir.exists():
             return []
         targets = {normalize_id(t["target_id"]) for t in journal}
         removed = []
         for path in sorted(self.bundles_dir.glob("*.json")):
-            # Fail-closed and typed (audit §11): an unreadable or invalid
-            # manifest raises DeletionError naming the file — never a
-            # bare UnicodeEncodeError mid-recovery.
+            # A-2 split (audit): (OSError, KeyError) = genuinely
+            # unreadable/missing -> skip + count, visible via
+            # last_recovery_skipped_unreadable. TypeError/ValueError =
+            # malformed content -> typed, file-naming, never silent.
             try:
                 manifest = json_loads_strict(path.read_text(encoding="utf-8"))
-            except ValueError as err:
+                validate_bundle(manifest)
+            except (OSError, KeyError):
+                self.last_recovery_skipped_unreadable += 1
+                continue
+            except (TypeError, ValueError) as err:
+                if isinstance(err, DeletionError):
+                    raise
                 raise DeletionError(
                     f"corrupt bundle manifest {path}: {err}"
-                ) from err
-            try:
-                validate_bundle(manifest)
-            except ValueError as err:
-                raise DeletionError(
-                    f"invalid bundle manifest {path}: {err}"
                 ) from err
             stale = [
                 r
@@ -1077,7 +1322,7 @@ class L1DeletionService:
                 superseding.setdefault(link, []).append(artifact)
         return by_digest, superseding
 
-    def verify_receipt(self, receipt):
+    def verify_receipt(self, receipt, *, check_inventory=False):
         """Check a receipt artifact against durable service state.
 
         Returns ``{"ok": bool, "problems": [...], "receipt_id": ...}``.
@@ -1089,9 +1334,22 @@ class L1DeletionService:
         digests written before the manifest rewrite) UNION the recovery
         log (digests removed later by :meth:`recover` — semantics (i), see
         module docstring: every removal known to the service root must be
-        accounted for in ``removed_records``), absence of the target from
-        every bundle under the service root, and — for re-issued receipts —
-        the supersession chain (SPEC 1.2.2).
+        accounted for in ``removed_records``), the receipt's internal
+        inventory consistency (``inventory_digest`` recomputed over the
+        embedded sorted ``bundle_set``), absence of the target from
+        every bundle under the service root, and — for re-issued receipts
+        — the supersession chain (SPEC 1.2.2).
+
+        ``check_inventory`` (audit §13, default OFF to preserve the API
+        contract): additionally compare the receipt's recorded
+        ``bundle_set`` against the store root's CURRENT live bundle-id
+        set. A receipt is a HISTORICAL record, so plain verification stays
+        ``ok`` after the store set changes (a bundle added or removed
+        later does not retroactively falsify the deletion); with
+        ``check_inventory=True`` a set divergence fails closed with a
+        problem NAMING the divergent bundle ids — the cross-root
+        reconciliation hook that detects a laundered/resurrected sibling
+        bundle the receipt's record-level evidence cannot see.
 
         Supersession chain semantics: ``ok: True`` is possible ONLY for the
         chain TAIL. Every ``supersedes`` link must resolve to a real,
@@ -1150,6 +1408,23 @@ class L1DeletionService:
             problems.append(
                 "receipt derived_artifacts do not match the embedded tombstone"
             )
+
+        # Inventory self-consistency (audit §13): the digest must be the
+        # canonical hash of the embedded sorted bundle-id list. Covered
+        # for free against whole-body tampering by integrity.digest, but
+        # a receipt assembled from mismatched parts fails here, named.
+        inventory_set = None
+        try:
+            inventory_set = list(body["inventory"]["bundle_set"])
+            if inventory_digest(inventory_set) != body["inventory"]["inventory_digest"]:
+                problems.append(
+                    "receipt inventory_digest does not match its bundle_set "
+                    "(tampered inventory)"
+                )
+        except (KeyError, TypeError) as err:
+            problems.append(f"receipt inventory block malformed: {err}")
+        except UnicodeEncodeError as err:
+            problems.append(f"receipt inventory is not encodable UTF-8: {err}")
 
         # Supersession chain (SPEC 1.2.2): walk every supersedes link from
         # this receipt to the chain origin. The visited check comes FIRST
@@ -1313,6 +1588,31 @@ class L1DeletionService:
             problems.append(f"bundle state unreadable: {err}")
         for bundle_id in surviving or []:
             problems.append(f"target record still present in bundle {bundle_id}")
+
+        # Audit §13 (opt-in, default off to preserve the API contract):
+        # cross-root reconciliation. A receipt is a historical record —
+        # store-set growth AFTER the deletion does not falsify it — so
+        # this runs only when the caller asks, and fails closed naming
+        # the divergent bundle ids.
+        if check_inventory:
+            try:
+                live_set = set(self.bundle_inventory())
+                recorded_set = set(
+                    inventory_set
+                    if inventory_set is not None
+                    else body["inventory"]["bundle_set"]
+                )
+            except (DeletionError, KeyError, TypeError, UnicodeEncodeError) as err:
+                problems.append(f"store inventory unreadable: {err}")
+            else:
+                added = sorted(live_set - recorded_set)
+                missing = sorted(recorded_set - live_set)
+                if added or missing:
+                    problems.append(
+                        "store inventory diverges from the receipt's "
+                        f"deletion-time bundle_set: added bundle ids {added}, "
+                        f"missing bundle ids {missing}"
+                    )
 
         return {
             "ok": not problems,
