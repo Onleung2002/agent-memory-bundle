@@ -57,7 +57,12 @@ from .canonical import (
     json_loads_strict,
     utc_now,
 )
-from .deletion import L1DeletionService, _atomic_write, _fsync_dir
+from .deletion import (
+    DEFAULT_LOCK_TIMEOUT,
+    L1DeletionService,
+    _atomic_write,
+    _fsync_dir,
+)
 
 PACK_SCHEMA = None
 ACK_SCHEMA = None
@@ -226,7 +231,7 @@ def export_propagation_pack(root, target_ids=None, *, source_root=None, now=None
     return pack
 
 
-def import_propagation_pack(root, pack, *, now=None):
+def import_propagation_pack(root, pack, *, now=None, lock_timeout=DEFAULT_LOCK_TIMEOUT):
     """Import a propagation pack into this root (RFC UC1 minimal intake gate).
 
     Intake is gated: a pack whose attestation/digest chain does not verify
@@ -250,8 +255,21 @@ def import_propagation_pack(root, pack, *, now=None):
     ``ACK_LIMITATIONS`` — digest-chain integrity only; tamper-evidence
     relies on the writer of this root not forging; cryptographic signing
     is M4/L4 scope.
+
+    The whole intake holds the destination root's advisory lock (audit §3):
+    the journal append below routes around the service's locked
+    :meth:`~mbcp.deletion.L1DeletionService.recover`, so intake takes the
+    lock itself for its full duration (the nested recover() acquisition is
+    re-entrant — same thread). ``lock_timeout`` bounds the wait; a timeout
+    raises the typed :class:`~mbcp.deletion.LockTimeoutError`.
     """
     service = _as_service(root)
+    with service._root_lock(lock_timeout):
+        return _import_propagation_pack_locked(service, pack, now=now)
+
+
+def _import_propagation_pack_locked(service, pack, *, now=None):
+    """Locked body of :func:`import_propagation_pack`."""
     body = _validate_pack(pack)
     pack_digest = body["pack_digest"]
     source_root = body["source_root"]

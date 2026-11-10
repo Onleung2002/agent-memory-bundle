@@ -20,6 +20,7 @@
         "tombstone",
         "tombstone_digest",
         "removed_records",
+        "inventory",
         "derived_artifacts",
         "derived_artifacts_verified",
         "propagation",
@@ -68,6 +69,22 @@
             "properties": {
               "id": {"type": "string", "minLength": 1},
               "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        "inventory": {
+          "type": "object",
+          "required": ["bundle_set", "inventory_digest"],
+          "additionalProperties": false,
+          "description": "Store-set binding (audit §13): the sorted list of ALL bundle ids in the service root at deletion time (pre-deletion state) plus the canonical SHA-256 over that sorted list. Order-independent by construction. Receipts issued before this block existed do not validate against this schema revision.",
+          "properties": {
+            "bundle_set": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1}
+            },
+            "inventory_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             }
           }
         },
