@@ -183,10 +183,14 @@ DEFAULT_LOCK_TIMEOUT = 10.0
 
 # In-process lock table: canonical root path -> {"owner": thread ident or
 # None, "fh": open lock-file handle or None, "cond": Condition}.
-# fcntl.flock excludes OTHER PROCESSES, but two open file descriptions in
-# the SAME process do not exclude each other, so cross-thread exclusion
-# within one process is enforced here: at most one thread per root owns
-# the flock; the rest wait on the condition variable.
+# fcntl.flock locks are per open-file-description: separate open() fds (even
+# within one process) DO exclude each other, while dup'd fds share the lock.
+# flock alone therefore cannot express this design's requirements — the
+# process-level owner + condition variable exists for RE-ENTRANCY (a
+# same-thread nested locked call on a fresh fd would otherwise self-block →
+# LockTimeoutError) and cross-thread fairness, not because flock fails to
+# exclude. At most one thread per root owns the flock; the rest wait on the
+# condition variable.
 _ROOT_LOCK_TABLE = {}
 _ROOT_LOCK_TABLE_GUARD = threading.Lock()
 _ROOT_LOCK_TLS = threading.local()
