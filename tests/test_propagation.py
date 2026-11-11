@@ -14,8 +14,19 @@ Covers:
   final state, same ack);
 - the pending->acked propagation.jsonl journal: line shape, fsync-before-
   return, corrupt line -> loud typed error;
-- the explicit honesty contract: the ack limitation wording that says the
-  digest chain is NOT a signature (mutation-checked: no overclaim).
+- M4 Round B (SPEC 1.2.6/1.2.7): pack ed25519 attestation — the signature
+  gate runs BEFORE the digest-chain gate and the fail-closed authorized-
+  source accept-list; the explicit honesty contract on the ack limitations
+  (mutation-checked: no overclaim).
+
+UPDATED-PINS (M4 Round B): pack exports are signed with the SOURCE root's
+per-root keypair, and intake is fail-closed against the destination root's
+accept-list — every successful-import fixture now authorizes the source
+key first, body-tampered forgeries now fail at the SIGNATURE layer
+(AttestationVerifyError) instead of the digest chain, and export
+determinism is pinned on ONE root (two distinct roots have distinct
+attestation keys, so their packs differ even for identical journal
+states).
 """
 
 import builtins
@@ -30,10 +41,14 @@ import mbcp.propagation as propagation_module
 
 from mbcp import (
     ACK_LIMITATIONS,
+    AttestationVerifyError,
+    AuthorizationRejectedError,
     L1DeletionService,
+    MissingAttestationError,
     PackValidationError,
     PropagationError,
     PropagationJournalError,
+    authorize_source,
     build_bundle,
     canonical_bytes,
     canonical_sha256,
@@ -93,6 +108,16 @@ def _dest_service(tmp, name="dest"):
     return service
 
 
+def _authorize(dest, pack):
+    """M4 Round B (SPEC 1.2.7): intake is fail-closed — a successful
+    import fixture must authorize the pack's source key at the
+    destination root first (multi-root deployments configure accept-lists
+    as a normal conformance requirement)."""
+    authorize_source(
+        dest.root, pack["pack"]["key_id"], pack["pack"]["attestation_pubkey"]
+    )
+
+
 def _pack(tmp, name="source", **kwargs):
     """Export a pack from a fresh source root at <tmp>/<name>.
 
@@ -111,13 +136,45 @@ def _pack(tmp, name="source", **kwargs):
 # -- export -----------------------------------------------------------------
 
 def test_export_pack_is_deterministic_byte_identical():
-    # Same journal state built in two separate roots (the write boundary
-    # forbids re-putting tombstoned-id manifests into one root), explicit
-    # source_root -> byte-identical packs.
+    # Same root + same journal state + same (source_root, now) ->
+    # byte-identical packs, run twice against one root (export does not
+    # mutate, and the write boundary only forbids RE-PUTTING manifests,
+    # not re-exporting).
+    #
+    # UPDATED-PIN (M4 Round B, SPEC 1.2.6): the old pin exported from two
+    # separate roots — that died with per-root attestation keys, since two
+    # distinct roots sign with DIFFERENT keypairs and their packs differ
+    # even for identical journal state (see
+    # test_distinct_roots_sign_with_distinct_keys below). Export does not
+    # mutate the root, so one root exported twice is the honest pin.
+    with tempfile.TemporaryDirectory() as tmp:
+        pack1 = _pack(tmp)
+        service = L1DeletionService(Path(tmp) / "source", clock=lambda: DELETED_AT)
+        pack2 = export_propagation_pack(
+            service, source_root=SOURCE_ROOT_ID, now=FIXED_TS
+        )
+    assert canonical_bytes(pack1) == canonical_bytes(pack2)
+
+
+def test_distinct_roots_sign_with_distinct_keys():
+    # Round B corollary: per-root keypairs mean two roots exporting the
+    # same tombstone state produce packs that differ EXACTLY in the
+    # attestation block (key_id, attestation_pubkey, attestation_sig) —
+    # the propagated tombstone content is unchanged.
     with tempfile.TemporaryDirectory() as tmp:
         pack1 = _pack(tmp, "source-1")
         pack2 = _pack(tmp, "source-2")
-    assert canonical_bytes(pack1) == canonical_bytes(pack2)
+    assert pack1["pack"]["key_id"] != pack2["pack"]["key_id"]
+    stripped1 = json.loads(json.dumps(pack1))
+    stripped2 = json.loads(json.dumps(pack2))
+    for artifact in (stripped1, stripped2):
+        del artifact["attestation_sig"]
+        del artifact["pack"]["key_id"]
+        del artifact["pack"]["attestation_pubkey"]
+        # the self-digest covered the key fields — recompute over the
+        # stripped body so the comparison isolates the attestation block
+        artifact["integrity"]["digest"] = canonical_sha256(artifact["pack"])
+    assert stripped1 == stripped2
 
 
 def test_export_pack_digest_chain_verifies():
@@ -154,6 +211,8 @@ def test_same_tombstone_set_from_two_roots_is_different_packs():
         assert pack_a["pack"]["pack_digest"] != pack_b["pack"]["pack_digest"]
 
         dest = _dest_service(tmp, "dest")
+        _authorize(dest, pack_a)
+        _authorize(dest, pack_b)
         ack_a = import_propagation_pack(dest.root, pack_a, now=IMPORTED_AT)
         ack_b = import_propagation_pack(dest.root, pack_b, now=IMPORTED_AT)
 
@@ -180,6 +239,9 @@ def test_export_pack_target_ids_filter():
 # -- forgery rejection (digest-chain integrity layer only) ------------------
 
 def test_import_rejects_mutated_tombstone_with_stale_digest_list():
+    # UPDATED-PIN (M4 Round B): body tampering breaks the ed25519
+    # signature, so the rejection now fires at the OUTERMOST layer
+    # (AttestationVerifyError), before the digest chain is even reached.
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         forged = json.loads(json.dumps(pack))
@@ -187,7 +249,7 @@ def test_import_rejects_mutated_tombstone_with_stale_digest_list():
         dest = _dest_service(tmp)
         before = dest.journal_path.read_bytes() if dest.journal_path.exists() else b""
         assert_raises(
-            PackValidationError,
+            AttestationVerifyError,
             import_propagation_pack, dest.root, forged, now=IMPORTED_AT,
         )
         # nothing applied: journal untouched, record still present
@@ -197,6 +259,8 @@ def test_import_rejects_mutated_tombstone_with_stale_digest_list():
 
 
 def test_import_rejects_pack_digest_recomputed_over_wrong_set():
+    # UPDATED-PIN (M4 Round B): the recomputed integrity invalidates the
+    # signature — rejected at the attestation layer.
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         forged = json.loads(json.dumps(pack))
@@ -207,24 +271,65 @@ def test_import_rejects_pack_digest_recomputed_over_wrong_set():
         forged["integrity"]["digest"] = canonical_sha256(forged["pack"])
         dest = _dest_service(tmp)
         assert_raises(
-            PackValidationError,
+            AttestationVerifyError,
             import_propagation_pack, dest.root, forged, now=IMPORTED_AT,
         )
         assert dest.get_bundle("bundle-dest")["records"], "forged partial pack applied"
 
 
 def test_import_rejects_missing_attestation():
+    # UPDATED-PIN (M4 Round B): deleting the digest-chain attestation
+    # block changes the signed body, so the signature layer rejects.
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         del pack["pack"]["attestation"]
         dest = _dest_service(tmp)
         assert_raises(
-            PackValidationError,
+            AttestationVerifyError,
             import_propagation_pack, dest.root, pack, now=IMPORTED_AT,
+        )
+
+def test_import_rejects_missing_attestation_sig_field():
+    # SPEC 1.2.6 forgery mode (a): NO signature field at all — typed
+    # reject naming the field, before anything else.
+    with tempfile.TemporaryDirectory() as tmp:
+        pack = _pack(tmp)
+        del pack["attestation_sig"]
+        dest = _dest_service(tmp)
+        try:
+            import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
+        except MissingAttestationError as err:
+            assert "attestation_sig" in str(err)
+        else:
+            raise AssertionError("expected MissingAttestationError")
+
+def test_import_rejects_pack_resigned_by_wrong_key():
+    # SPEC 1.2.6 forgery mode (d), pack path: a pack tampered and then
+    # RE-SIGNED by an attacker key verifies mathematically, but the
+    # attacker key is not in the accept-list -> AuthorizationRejectedError.
+    with tempfile.TemporaryDirectory() as tmp:
+        pack = _pack(tmp)
+        forged = json.loads(json.dumps(pack))
+        forged["pack"]["tombstones"][0]["reason"] = "laundered reason"
+        from syn import syn_keypair
+        from mbcp.attestation import sign_envelope
+        attacker = syn_keypair()
+        # strip the attacker's key fields, re-sign over the tampered body
+        del forged["attestation_sig"]
+        del forged["pack"]["key_id"]
+        del forged["pack"]["attestation_pubkey"]
+        forged = sign_envelope(forged, attacker, body_field="pack")
+        dest = _dest_service(tmp)
+        _authorize(dest, pack)  # the REAL source key is authorized ...
+        assert_raises(
+            AuthorizationRejectedError,
+            import_propagation_pack, dest.root, forged, now=IMPORTED_AT,
         )
 
 
 def test_import_rejects_attestation_bound_to_other_pack():
+    # UPDATED-PIN (M4 Round B): recomputed integrity invalidates the
+    # signature — rejected at the attestation layer.
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         other = _pack(tmp, "other-source", target_ids=["rec-002"])
@@ -233,18 +338,45 @@ def test_import_rejects_attestation_bound_to_other_pack():
         forged["integrity"]["digest"] = canonical_sha256(forged["pack"])
         dest = _dest_service(tmp)
         assert_raises(
-            PackValidationError,
+            AttestationVerifyError,
             import_propagation_pack, dest.root, forged, now=IMPORTED_AT,
         )
 
 
 def test_import_rejects_tampered_artifact_integrity():
+    # UPDATED-PIN (M4 Round B): a body change without re-signing fails at
+    # the signature layer (this is exactly what the L4 attestation adds:
+    # the destination writer can no longer forge a self-consistent pack).
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         forged = json.loads(json.dumps(pack))
         forged["pack"]["source_root"] = "root-impostor"
         # integrity.digest NOT recomputed -> whole-artifact tampering
         dest = _dest_service(tmp)
+        assert_raises(
+            AttestationVerifyError,
+            import_propagation_pack, dest.root, forged, now=IMPORTED_AT,
+        )
+
+def test_import_rejects_tampered_pack_that_was_resigned_with_source_key():
+    # The digest-chain gate still exists UNDER the signature layer: a
+    # pack tampered and re-signed with the SOURCE key (the destination
+    # root cannot produce this — it proves the source key signed a pack
+    # whose internal digest chain was then broken) passes attestation +
+    # authorization and dies at the digest chain with PackValidationError.
+    with tempfile.TemporaryDirectory() as tmp:
+        pack = _pack(tmp)
+        forged = json.loads(json.dumps(pack))
+        forged["pack"]["tombstones"][0]["reason"] = "laundered reason"
+        from mbcp.attestation import KeyPair, load_keypair
+        source_key = load_keypair(Path(tmp) / "source")
+        del forged["attestation_sig"]
+        del forged["pack"]["key_id"]
+        del forged["pack"]["attestation_pubkey"]
+        from mbcp.attestation import sign_envelope
+        forged = sign_envelope(forged, source_key, body_field="pack")
+        dest = _dest_service(tmp)
+        _authorize(dest, forged)  # authorizes under the source key_id
         assert_raises(
             PackValidationError,
             import_propagation_pack, dest.root, forged, now=IMPORTED_AT,
@@ -257,6 +389,7 @@ def test_import_applies_tombstones_and_removes_targeted_records():
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         dest = _dest_service(tmp)
+        _authorize(dest, pack)
         ack = import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
 
         # store records targeted by pack tombstones are gone (id-wide)
@@ -294,6 +427,7 @@ def test_import_is_idempotent_no_new_journal_lines_same_ack():
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         dest = _dest_service(tmp)
+        _authorize(dest, pack)
         ack1 = import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
         journal_lines_1 = dest.journal_path.read_text(encoding="utf-8").count("\n")
         ack2 = import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
@@ -302,18 +436,22 @@ def test_import_is_idempotent_no_new_journal_lines_same_ack():
     assert ack1 == ack2
 
 
-def _reversed_pack(pack):
-    """Same tombstones in reverse pack order (integrity recomputed).
+def _reversed_pack(pack, keypair):
+    """Same tombstones in reverse pack order (integrity + SIGNATURE redone).
 
     The pack digest binds (source_root, SORTED tombstone digest list), so
-    reordering the tombstones leaves it unchanged."""
+    reordering the tombstones leaves it unchanged. Round B: reordering
+    changes the signed bytes, so the pack must be RE-SIGNED with the
+    source root's keypair for the fixture to reach intake."""
+    from mbcp.attestation import sign_envelope
     body = json.loads(json.dumps(pack["pack"]))
     body["tombstones"] = list(reversed(body["tombstones"]))
     body["tombstone_digests"] = [canonical_sha256(t) for t in body["tombstones"]]
-    return {
+    artifact = {
         "pack": body,
         "integrity": {"algo": "sha256", "digest": canonical_sha256(body)},
     }
+    return sign_envelope(artifact, keypair, body_field="pack")
 
 
 def test_import_is_order_independent_same_state_same_ack():
@@ -321,9 +459,13 @@ def test_import_is_order_independent_same_state_same_ack():
         pack = _pack(tmp)
         dest_a = _dest_service(tmp, "dest-a")
         dest_b = _dest_service(tmp, "dest-b")
+        _authorize(dest_a, pack)
+        _authorize(dest_b, pack)
         ack_a = import_propagation_pack(dest_a.root, pack, now=IMPORTED_AT)
+        from mbcp.attestation import load_keypair
+        source_key = load_keypair(Path(tmp) / "source")
         ack_b = import_propagation_pack(
-            dest_b.root, _reversed_pack(pack), now=IMPORTED_AT
+            dest_b.root, _reversed_pack(pack, source_key), now=IMPORTED_AT
         )
         assert ack_a == ack_b
         assert canonical_bytes(dest_a.get_bundle("bundle-dest")) == canonical_bytes(
@@ -337,6 +479,7 @@ def test_propagation_journal_records_acked_line_with_shape():
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         dest = _dest_service(tmp)
+        _authorize(dest, pack)
         ack = import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
         entries = read_propagation_journal(dest.root)
     assert len(entries) == 1
@@ -349,18 +492,19 @@ def test_propagation_journal_records_acked_line_with_shape():
 
 
 def test_pending_propagation_is_recorded_but_is_not_evidence():
+    # UPDATED-PIN (M4 Round B, SPEC 1.2.8): the pending channel carries
+    # the PACK (signature-verified at enqueue); retry_count/next_attempt_at
+    # ride on the entry.
     with tempfile.TemporaryDirectory() as tmp:
+        pack = _pack(tmp)
         dest = _dest_service(tmp)
-        record_pending_propagation(
-            dest.root,
-            pack_digest="ab" * 32,
-            source_root=SOURCE_ROOT_ID,
-            now=IMPORTED_AT,
-        )
+        record_pending_propagation(dest.root, pack, now=IMPORTED_AT)
         entries = read_propagation_journal(dest.root)
         # fail-closed: nothing was applied, the line is explicitly pending
         assert [e["status"] for e in entries] == ["pending"]
         assert entries[0]["ack_digest"] is None
+        assert entries[0]["retry_count"] == 0
+        assert entries[0]["next_attempt_at"] == IMPORTED_AT
         assert {t["target_id"] for t in dest.journal_tombstones()} == set()
         assert len(dest.get_bundle("bundle-dest")["records"]) == 3
 
@@ -424,6 +568,7 @@ def test_propagation_journal_fsync_before_return():
         with tempfile.TemporaryDirectory() as tmp:
             pack = _pack(tmp)
             dest = _dest_service(tmp)
+            _authorize(dest, pack)
             baseline = len(events)
             import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
     finally:
@@ -444,10 +589,10 @@ def test_propagation_journal_fsync_before_return():
 def test_corrupt_propagation_journal_raises_typed_error():
     with tempfile.TemporaryDirectory() as tmp:
         dest = _dest_service(tmp)
-        record_pending_propagation(
-            dest.root, pack_digest="cd" * 32, source_root=SOURCE_ROOT_ID,
-            now=IMPORTED_AT,
-        )
+        pack = _pack(tmp)
+        # UPDATED-PIN (M4 Round B): the pending channel carries the signed
+        # pack itself (SPEC 1.2.8) — enqueue a real export.
+        record_pending_propagation(dest.root, pack, now=IMPORTED_AT)
         path = dest.root / "propagation.jsonl"
         with open(path, "ab") as fh:
             fh.write(b"this is not json\n")
@@ -468,6 +613,7 @@ def test_propagation_journal_is_attempts_audit_one_line_per_intake():
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         dest = _dest_service(tmp)
+        _authorize(dest, pack)
         import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
         import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
         entries = read_propagation_journal(dest.root)
@@ -482,10 +628,10 @@ def test_propagation_journal_invalid_utf8_raises_typed_error():
     # UnicodeDecodeError.
     with tempfile.TemporaryDirectory() as tmp:
         dest = _dest_service(tmp)
-        record_pending_propagation(
-            dest.root, pack_digest="ef" * 32, source_root=SOURCE_ROOT_ID,
-            now=IMPORTED_AT,
-        )
+        pack = _pack(tmp)
+        # UPDATED-PIN (M4 Round B): the pending channel carries the signed
+        # pack itself (SPEC 1.2.8) — enqueue a real export.
+        record_pending_propagation(dest.root, pack, now=IMPORTED_AT)
         path = dest.root / "propagation.jsonl"
         with open(path, "ab") as fh:
             fh.write(b"\xff\xfe\x00not-utf8\n")
@@ -507,6 +653,7 @@ def test_noop_reimport_tampered_ack_is_reissued_not_returned():
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         dest = _dest_service(tmp)
+        _authorize(dest, pack)
         ack1 = import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
         ack_path = (
             dest.root / "propagation" / "acks"
@@ -530,6 +677,7 @@ def test_noop_reimport_corrupt_ack_raises_typed_error():
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         dest = _dest_service(tmp)
+        _authorize(dest, pack)
         import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
         ack_path = (
             dest.root / "propagation" / "acks"
@@ -546,17 +694,20 @@ def test_noop_reimport_corrupt_ack_raises_typed_error():
 
 # -- honesty: the ack must not overclaim ---------------------------------------
 
-def test_ack_limitations_state_no_signature_wording():
+def test_ack_limitations_state_verified_pack_unsigned_ack_wording():
+    # UPDATED-PIN (M4 Round B, SPEC 1.2.6): the pack IS now signed, so the
+    # old "no signatures, M4/L4 scope" wording would overclaim-in-reverse.
+    # The mutation-checked honesty contract: the ack must say the PACK
+    # attestation was verified at intake and that the ACK ARTIFACT itself
+    # is not independently signed — it must not claim to be a signature.
     with tempfile.TemporaryDirectory() as tmp:
         pack = _pack(tmp)
         dest = _dest_service(tmp)
+        _authorize(dest, pack)
         ack = import_propagation_pack(dest.root, pack, now=IMPORTED_AT)
     limitations = ack["ack"]["limitations"]
     assert limitations == ACK_LIMITATIONS
     joined = " ".join(limitations)
-    # The mutation-checked honesty contract: the artifact must NOT overclaim
-    # cryptographic provenance. Exact required wording:
-    assert (
-        "digest-chain integrity only; tamper-evidence relies on the writer "
-        "of this root not forging; cryptographic signing is M4/L4 scope."
-    ) in joined
+    assert "authorized-source accept-list" in joined
+    assert "not independently signed" in joined
+    assert "digest-chain integrity only" in joined

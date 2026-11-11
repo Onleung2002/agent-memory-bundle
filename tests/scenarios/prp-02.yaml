@@ -1,7 +1,7 @@
 {
   "id": "PRP-02",
   "spec_version": "0.1",
-  "title": "cross-root propagation: a pack with a tampered tombstone is rejected and nothing is applied",
+  "title": "cross-root propagation: a pack with a tampered tombstone is rejected at the L4 signature layer and nothing is applied",
   "op": "propagate",
   "input": {
     "source_bundles": [
@@ -156,7 +156,7 @@
     "tamper": "first-tombstone-reason"
   },
   "expect": {
-    "error": "PackValidationError",
+    "error": "AttestationVerifyError",
     "dest_record_ids": [
       "rec-001",
       "rec-002"

@@ -2,11 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mbcp.dev/schemas/propagation-pack.v0.json",
   "title": "MBCP L2 propagation pack (v0)",
-  "description": "Cross-root tombstone propagation pack (RFC Q1/Q2). Digest-chain integrity only: no signatures exist, so tamper-evidence relies on the writer of the source root not forging; cryptographic signing is M4/L4 scope. The pack must never be presented as third-party-proof of erasure.",
+  "description": "Cross-root tombstone propagation pack (RFC Q1/Q2), L4-attested (SPEC 1.2.6 Round B): the pack carries a deterministic ed25519 attestation_sig over the canonical bytes of {integrity, pack} (everything except the sig itself), produced by the SOURCE service root's per-root keypair; the pack body embeds the key_id fingerprint and attestation_pubkey so intake can verify the signature and authorize the source. Digest-chain integrity still runs underneath the signature layer; intake is additionally fail-closed against the destination root's authorized-source accept-list (SPEC 1.2.7).",
   "type": "object",
-  "required": ["pack", "integrity"],
+  "required": ["pack", "integrity", "attestation_sig"],
   "additionalProperties": false,
   "properties": {
+    "attestation_sig": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$",
+      "description": "Deterministic ed25519 signature (hex128) over the canonical bytes of this artifact WITHOUT the attestation_sig field — binds the integrity block and the whole pack body (SPEC 1.2.6). Verified BEFORE the digest-chain gate at intake; missing or non-verifying signatures are typed rejects."
+    },
     "pack": {
       "type": "object",
       "required": [
@@ -15,7 +20,9 @@
         "tombstones",
         "tombstone_digests",
         "pack_digest",
-        "attestation"
+        "attestation",
+        "key_id",
+        "attestation_pubkey"
       ],
       "additionalProperties": false,
       "properties": {
@@ -44,6 +51,16 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
           "description": "Canonical SHA-256 of the object {\"source_root\": \"...\", \"tombstone_digests\": [<sorted digests>]} - binds the source root AND the tombstone set (SPEC 2 audit-7 tightening, 2026-11-08): same tombstone set from different roots = different packs, different ack paths."
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "Short fingerprint of attestation_pubkey (SHA-256[:16]) — the reserved key-rotation anchor and the lookup key in the destination root's authorized-source accept-list (SPEC 1.2.7). Must match the embedded pubkey."
+        },
+        "attestation_pubkey": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "ed25519 public key of the SOURCE service root, embedded so intake can verify attestation_sig from the artifact alone (SPEC 1.2.6) and match it against the accept-list (SPEC 1.2.7)."
         },
         "attestation": {
           "type": "object",

@@ -29,7 +29,7 @@ from syn import assert_raises, syn_record, write_bundle_direct
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mbcp import build_bundle
+from mbcp import authorize_source, build_bundle
 from mbcp.canonical import NonFiniteConstantError, json_loads_strict
 from mbcp.deletion import DeletionError, L1DeletionService
 from mbcp.propagation import PropagationError, export_propagation_pack, import_propagation_pack
@@ -157,6 +157,11 @@ def test_nan_literal_in_propagation_ack_rejected_typed():
     svc = _svc()
     svc.delete("b1", "r1", "user request")
     pack = export_propagation_pack(svc)
+    # UPDATED-PIN (M4 Round B, SPEC 1.2.7): intake is fail-closed —
+    # authorize the source key (same root here) before the import.
+    authorize_source(
+        svc.root, pack["pack"]["key_id"], pack["pack"]["attestation_pubkey"]
+    )
     import_propagation_pack(svc, pack)
     apath = sorted((svc.root / "propagation" / "acks").glob("*.json"))[0]
     apath.write_text(

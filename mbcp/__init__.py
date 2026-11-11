@@ -5,6 +5,21 @@ cross-bundle load_policy adjudication, and tombstone-first import.
 """
 
 from .canonical import canonical_bytes, canonical_sha256, normalize_id, utc_now
+from .attestation import (
+    KEY_FILE_NAME,
+    AttestationError,
+    AttestationVerifyError,
+    AuthorizationRejectedError,
+    KeyPair,
+    MissingAttestationError,
+    authorize_source,
+    deauthorize_source,
+    ensure_keypair,
+    generate_keypair,
+    keypair_from_seed_hex,
+    load_authorized_sources,
+    load_keypair,
+)
 from .bundle import (
     BudgetExceeded,
     LoadValidationError,
@@ -36,13 +51,19 @@ from .deletion import (
 )
 from .propagation import (
     ACK_LIMITATIONS,
+    MAX_PROPAGATION_RETRIES,
+    RETRY_BACKOFF_SECONDS,
+    DeadLetterPropagationError,
     PackValidationError,
     PropagationError,
     PropagationJournalError,
+    dead_lettered_entries,
     export_propagation_pack,
     import_propagation_pack,
+    pending_propagation_entries,
     read_propagation_journal,
     record_pending_propagation,
+    retry_pending_propagation,
 )
 
 __all__ = [
@@ -50,6 +71,19 @@ __all__ = [
     "canonical_sha256",
     "normalize_id",
     "utc_now",
+    "KEY_FILE_NAME",
+    "AttestationError",
+    "AttestationVerifyError",
+    "AuthorizationRejectedError",
+    "KeyPair",
+    "MissingAttestationError",
+    "authorize_source",
+    "deauthorize_source",
+    "ensure_keypair",
+    "generate_keypair",
+    "keypair_from_seed_hex",
+    "load_authorized_sources",
+    "load_keypair",
     "BudgetExceeded",
     "LoadValidationError",
     "MergeConflict",
@@ -74,11 +108,17 @@ __all__ = [
     "UnknownTargetError",
     "build_receipt",
     "ACK_LIMITATIONS",
+    "MAX_PROPAGATION_RETRIES",
+    "RETRY_BACKOFF_SECONDS",
+    "DeadLetterPropagationError",
     "PackValidationError",
     "PropagationError",
     "PropagationJournalError",
+    "dead_lettered_entries",
     "export_propagation_pack",
     "import_propagation_pack",
+    "pending_propagation_entries",
     "read_propagation_journal",
     "record_pending_propagation",
+    "retry_pending_propagation",
 ]

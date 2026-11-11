@@ -1,54 +1,89 @@
-"""L2 minimal: cross-root tombstone propagation packs (RFC Q1/Q2/Q3).
+"""L2: cross-root tombstone propagation packs (RFC Q1/Q2/Q3), L4-attested.
 
-Scope (RFC §1 Q1–Q3, approved 2026-11-06): the smallest cross-service-root
-propagation. A *source* root exports a **propagation pack** — the tombstone
-set of its journal (deduped with :meth:`L1DeletionService.all_tombstones`
+Scope (RFC §1 Q1–Q3, approved 2026-11-06; attestation added M4 Round B,
+SPEC 1.2.6/1.2.7/1.2.8): a *source* root exports a **propagation pack** —
+the tombstone set of its journal (deduped with :meth:`L1DeletionService.all_tombstones`
 semantics, optionally filtered to target ids), each tombstone with its
-canonical SHA-256, a pack-level digest chain and an attestation block. A
-*destination* root imports the pack through the existing tombstone-first
-machinery (journal append, then :meth:`L1DeletionService.recover`, so store
-records targeted by pack tombstones are removed and can never resurrect).
+canonical SHA-256, a pack-level digest chain, an attestation block, and a
+deterministic ed25519 signature from the source root's per-root keypair
+(the pack body embeds the ``key_id`` fingerprint and ``attestation_pubkey``
+— the export carries its pubkey). A *destination* root imports the pack
+through the existing tombstone-first machinery (journal append, then
+:meth:`L1DeletionService.recover`, so store records targeted by pack
+tombstones are removed and can never resurrect).
 
 Integrity model — READ THIS BEFORE RELYING ON A PACK OR ACK:
 
-Propagation packs and acks provide **digest-chain integrity only;
-tamper-evidence relies on the writer of this root not forging; cryptographic
-signing is M4/L4 scope.** There are no signatures anywhere in this module:
-anyone who can write the destination root can forge a self-consistent pack
-that "verifies". The digest chain detects accidental corruption and
-truncation, and binds an ack to exactly the tombstones that were applied —
-it does NOT prove to a third party that the source root really issued the
-pack. That proof waits for ed25519 signatures (M4, RFC §3.2 Q6).
+Propagation packs carry TWO integrity layers (SPEC 1.2.6 Round B):
 
-Failure semantics (Q3): propagation is best-effort. The append-only
-``propagation.jsonl`` journal records every intake attempt as
-``pending``/``acked``; fsynced before the call returns. This is an
-**attempts audit**, NOT a deduped state log: every successful intake —
-including an idempotent no-op re-import that applied nothing — appends
-exactly one ``acked`` line, so the line count grows by one per import
-(BACKLOG M3 round-2 advisory 1, pinned; do not "fix" the growth without
-a deliberate design change). Fail-closed, per the tombstone-first
-philosophy: an unacked propagation is NOT evidence of propagation, and
-``verify_receipt`` never consults propagation state, so a pending (or
-forged-acked) line can never launder a receipt into ok:True.
+1. **ed25519 attestation** (outermost): the pack body is signed by the
+   source root's key; intake verifies the signature BEFORE anything else
+   and authorizes the source against the destination root's
+   authorized-source accept-list (SPEC 1.2.7, fail-closed). This closes
+   the M3 honesty gap: a writer of the DESTINATION root can no longer
+   forge a self-consistent pack — forgery requires the SOURCE root's
+   private key. Honest threat model (verbatim discipline): the source
+   private key lives inside the source root, so a full source-root
+   compromise equals key compromise; signatures defend against partial
+   tampering and third-party forgery, not total root breach. Binding a
+   key to an identity still needs an out-of-band anchor.
+2. **Digest-chain integrity** (underneath): per-tombstone digests, the
+   sorted-list pack digest binding the source root, the attestation
+   block, and the artifact integrity digest. This detects accidental
+   corruption and truncation; it no longer carries the anti-forgery
+   burden alone.
+
+Acks remain digest-chain-only artifacts: the ack records WHAT a verified
+intake applied; it is not itself signed (see ``ACK_LIMITATIONS``).
+
+Failure semantics (Q3, tightened SPEC 1.2.8): propagation is best-effort.
+The append-only ``propagation.jsonl`` journal records every intake attempt
+as ``pending``/``acked``/``dead-lettered``; fsynced before the call
+returns. This is an **attempts audit**, NOT a deduped state log: every
+successful intake — including an idempotent no-op re-import that applied
+nothing — appends exactly one ``acked`` line, so the line count grows by
+one per import (BACKLOG M3 round-2 advisory 1, pinned; do not "fix" the
+growth without a deliberate design change). Pending entries carry a
+``retry_count`` and ``next_attempt_at``; :func:`retry_pending_propagation`
+re-attempts a signed pack, increments the counter deterministically, and
+past :data:`MAX_PROPAGATION_RETRIES` failed attempts the entry is
+**dead-lettered**: typed-visible via :func:`dead_lettered_entries`, never
+silently dropped, never retried forever. UNSIGNED packs never enter the
+pending channel — enqueue is a typed reject (SPEC 1.2.8). Fail-closed,
+per the tombstone-first philosophy: an unacked propagation is NOT
+evidence of propagation, and ``verify_receipt`` never consults
+propagation state, so a pending (or forged-acked) line can never launder
+a receipt into ok:True.
 
 Layout of a service root using propagation (in addition to the L1 layout)::
 
-    propagation.jsonl            # append-only pending->acked intake journal
+    propagation.jsonl            # append-only pending->acked/dead-lettered journal
     propagation/acks/<hex16>.json  # ack artifacts, keyed by pack_digest[:16]
+    .mbcp.authorized_sources.json  # intake accept-list: key_id -> pubkey hex
+                                   # (root config dotfile, outside all scans)
 
 Determinism: a pack is a pure function of (journal tombstone set,
-target_ids, source_root, issued_at) — tombstones are sorted by canonical
-SHA-256, the pack digest binds the source root AND the sorted digest
-list, and the whole artifact is canonical JSON (SPEC 1.4). Same inputs ->
-byte-identical pack.
+target_ids, source_root, issued_at, source keypair) — tombstones are
+sorted by canonical SHA-256, the pack digest binds the source root AND
+the sorted digest list, and the whole artifact is canonical JSON
+(SPEC 1.4). Same inputs -> byte-identical pack.
 """
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import _schema
+from .attestation import (
+    AttestationError,
+    AttestationVerifyError,
+    AuthorizationRejectedError,
+    MissingAttestationError,
+    attestation_problems,
+    check_authorization,
+    sign_envelope,
+)
 from .bundle import validate_tombstone
 from .canonical import (
     NonFiniteConstantError,
@@ -67,11 +102,23 @@ from .deletion import (
 PACK_SCHEMA = None
 ACK_SCHEMA = None
 
-# Verbatim-ish no-signature limitation, required in every ack (and mirrored
-# in docstrings): the digest chain is NOT a cryptographic provenance proof.
+# Spec 1.2.8 pending-retry constants (Round B ruling, documented values):
+# a pending entry is dead-lettered after MAX_PROPAGATION_RETRIES failed
+# retry attempts; next_attempt_at backs off RETRY_BACKOFF_SECONDS per
+# failed attempt (deterministic given the injected clock — no wall-clock
+# reads in the logic).
+MAX_PROPAGATION_RETRIES = 5
+RETRY_BACKOFF_SECONDS = 300
+
+# The ack is a digest-chain-only record of what a VERIFIED intake applied.
+# Wording pinned by tests (mutation-checked honesty contract): it must say
+# that the pack attestation was verified at intake and that the ack
+# artifact itself is not independently signed.
 ACK_LIMITATIONS = [
-    "digest-chain integrity only; tamper-evidence relies on the writer of "
-    "this root not forging; cryptographic signing is M4/L4 scope."
+    "propagation pack ed25519 attestation verified at intake against the "
+    "destination root's authorized-source accept-list; this ack artifact "
+    "itself carries digest-chain integrity only and is not independently "
+    "signed."
 ]
 
 
@@ -84,15 +131,30 @@ class PackValidationError(PropagationError):
     digest chain does not verify (tampered tombstone, stale digest list,
     recomputed pack digest over the wrong set, missing attestation, ...).
 
-    Rejection lives at the digest-chain integrity layer ONLY: a
-    self-consistent pack produced by the writer of the source root cannot be
-    told apart from a forgery, because there are no signatures (M4/L4).
+    Rejection at this layer means the pack was SIGNATURE-VERIFIED and
+    SOURCE-AUTHORIZED but its internal digest chain does not hold. The
+    layers ABOVE this one have their own typed errors (SPEC 1.2.6/1.2.7):
+    :class:`~mbcp.attestation.MissingAttestationError` (no signature
+    field), :class:`~mbcp.attestation.AttestationVerifyError` (signature
+    does not verify / key mismatch), and
+    :class:`~mbcp.attestation.AuthorizationRejectedError` (fail-closed
+    accept-list). All run BEFORE this digest-chain gate.
     """
 
 
 class PropagationJournalError(PropagationError):
     """Raised when ``propagation.jsonl`` is corrupt (A-15 hygiene: a loud
     typed error naming the line, never a bare JSONDecodeError)."""
+
+
+class DeadLetterPropagationError(PropagationError):
+    """Raised when a dead-lettered pending entry is retried (SPEC 1.2.8).
+
+    Dead-lettering is TERMINAL: the entry stays listable via
+    :func:`dead_lettered_entries` (never silently dropped) and is never
+    retried again (never infinite retry). Retrying one is a typed,
+    visible error — not a silent no-op.
+    """
 
 
 def _pack_schema():
@@ -174,6 +236,60 @@ def _validate_pack(pack):
     return body
 
 
+def _verify_pack_attestation(pack, dest_root):
+    """L4 intake gate for a propagation pack (SPEC 1.2.6/1.2.7).
+
+    Runs BEFORE the digest-chain gate (:func:`_validate_pack`), in this
+    order, each failure typed and nothing applied:
+
+    1. attestation fields present (``attestation_sig`` names the field
+       when missing) — :class:`MissingAttestationError`;
+    2. the ed25519 signature verifies against the pubkey embedded in the
+       pack body over the artifact bytes minus the sig
+       — :class:`AttestationVerifyError`;
+    3. the source is authorized: the pack's ``key_id`` must be listed in
+       the destination root's accept-list with the SAME pubkey
+       — :class:`AuthorizationRejectedError` (fail-closed: an absent,
+       empty or malformed accept-list rejects EVERY pack).
+
+    Returns the pack body on success.
+    """
+    if not isinstance(pack, dict):
+        raise MissingAttestationError(
+            "propagation pack is not an object; missing 'attestation_sig'"
+        )
+    sig_hex = pack.get("attestation_sig")
+    if not isinstance(sig_hex, str):
+        raise MissingAttestationError(
+            "propagation pack is missing required field 'attestation_sig' "
+            "(hex128 ed25519 signature, SPEC 1.2.6)"
+        )
+    body = pack.get("pack")
+    if not isinstance(body, dict):
+        raise MissingAttestationError(
+            "propagation pack is missing required field 'pack'"
+        )
+    pubkey_hex = body.get("attestation_pubkey")
+    if not isinstance(pubkey_hex, str):
+        raise MissingAttestationError(
+            "propagation pack body is missing required field "
+            "'attestation_pubkey'"
+        )
+    key_id = body.get("key_id")
+    if not isinstance(key_id, str):
+        raise MissingAttestationError(
+            "propagation pack body is missing required field 'key_id'"
+        )
+    problems = attestation_problems(pack, body_field="pack")
+    if problems:
+        raise AttestationVerifyError(
+            f"propagation pack attestation does not verify: "
+            f"{'; '.join(problems)}"
+        )
+    check_authorization(dest_root, key_id, pubkey_hex)
+    return body
+
+
 def export_propagation_pack(
     root,
     target_ids=None,
@@ -202,10 +318,16 @@ def export_propagation_pack(
     an export nested inside an already-locked flow on the same root is
     safe.
 
+    L4 attestation (SPEC 1.2.6): the pack is signed with THIS root's
+    per-root ed25519 keypair (created 0600 on first use), so the export
+    carries its own pubkey (``key_id`` + ``attestation_pubkey`` embedded
+    in the pack body, ``attestation_sig`` at the artifact level) and the
+    destination can verify provenance and authorize the source. The
+    source keypair is ensured INSIDE the root lock.
+
     Deterministic: same journal state + same (``source_root``, ``now``)
-    -> byte-identical pack. No signatures — digest-chain integrity only;
-    tamper-evidence relies on the writer of this root not forging;
-    cryptographic signing is M4/L4 scope.
+    -> byte-identical pack (the keypair is per-root and stable, so it
+    does not disturb export determinism on one root).
     """
     service = _as_service(root)
     with service._root_lock(lock_timeout):
@@ -242,6 +364,9 @@ def export_propagation_pack(
             "pack": body,
             "integrity": {"algo": "sha256", "digest": canonical_sha256(body)},
         }
+        # L4 attestation (SPEC 1.2.6): sign the whole artifact minus the
+        # sig field, with this root's keypair.
+        pack = sign_envelope(pack, service._attestation_keypair(), body_field="pack")
         _schema.validate(pack, _pack_schema())
         return pack
 
@@ -249,12 +374,22 @@ def export_propagation_pack(
 def import_propagation_pack(root, pack, *, now=None, lock_timeout=DEFAULT_LOCK_TIMEOUT):
     """Import a propagation pack into this root (RFC UC1 minimal intake gate).
 
-    Intake is gated: a pack whose attestation/digest chain does not verify
-    (missing attestation, mutated tombstone, stale digest list, pack digest
-    recomputed over the wrong set, mismatched artifact integrity) is
-    rejected with :class:`PackValidationError` and NOTHING is applied.
-    Verification is digest-chain integrity ONLY — no anti-forgery promise
-    is claimed, because no signatures exist (M4/L4 scope).
+    Intake is gated in layers, outermost first (SPEC 1.2.6/1.2.7), and a
+    failure in ANY layer rejects the pack with a TYPED error, nothing
+    applied:
+
+    1. **L4 attestation**: the pack must carry ``attestation_sig`` and the
+       ed25519 signature must verify against the pubkey embedded in the
+       pack body (missing field → :class:`MissingAttestationError`,
+       invalid signature → :class:`AttestationVerifyError`).
+    2. **Intake authorization** (fail-closed): the pack's ``key_id`` must
+       be listed in this root's authorized-source accept-list
+       (``<root>/.mbcp.authorized_sources.json``) with the same pubkey —
+       unknown key, key mismatch, or an absent/empty/malformed
+       accept-list all raise :class:`AuthorizationRejectedError`. There
+       is no "accepted-unverified" behavioural tier (SPEC 1.2.7).
+    3. **Digest chain**: the existing attestation/digest-chain gate
+       (:class:`PackValidationError`).
 
     Accepted tombstones are applied tombstone-first: each is appended to
     ``tombstones.jsonl`` (fsynced) unless the identical tombstone is
@@ -267,9 +402,8 @@ def import_propagation_pack(root, pack, *, now=None, lock_timeout=DEFAULT_LOCK_T
     and appends one ``acked`` line to ``propagation.jsonl`` (fsynced
     before returning). A re-import that applied nothing returns the
     existing ack unchanged. An ack is NOT an erasure certificate: see
-    ``ACK_LIMITATIONS`` — digest-chain integrity only; tamper-evidence
-    relies on the writer of this root not forging; cryptographic signing
-    is M4/L4 scope.
+    ``ACK_LIMITATIONS`` — the ack records what a VERIFIED intake applied,
+    and is itself digest-chain-only (not independently signed).
 
     The whole intake holds the destination root's advisory lock (audit §3):
     the journal append below routes around the service's locked
@@ -285,6 +419,10 @@ def import_propagation_pack(root, pack, *, now=None, lock_timeout=DEFAULT_LOCK_T
 
 def _import_propagation_pack_locked(service, pack, *, now=None):
     """Locked body of :func:`import_propagation_pack`."""
+    # L4 gate BEFORE the digest-chain gate (SPEC 1.2.6/1.2.7): signature
+    # verification, then fail-closed source authorization. Nothing is
+    # applied on failure at either layer.
+    _verify_pack_attestation(pack, service.root)
     body = _validate_pack(pack)
     pack_digest = body["pack_digest"]
     source_root = body["source_root"]
@@ -346,24 +484,165 @@ def _import_propagation_pack_locked(service, pack, *, now=None):
     return ack
 
 
-def record_pending_propagation(root, *, pack_digest, source_root, now=None):
-    """Record a propagation attempt that could not yet be acked (Q3).
+def record_pending_propagation(root, pack, *, now=None, retry_count=0,
+                               next_attempt_at=None):
+    """Record a propagation attempt that could not yet be acked (Q3,
+    tightened SPEC 1.2.8).
 
-    Best-effort semantics: when a pack cannot be imported (target root
-    offline, verification deferred, apply failed partway), the intake is
-    durably recorded as ``pending``. Fail-closed: an unacked propagation is
-    not evidence of propagation — a pending line never influences
-    ``verify_receipt`` and must never be presented as proof of erasure.
+    The pending channel carries SIGNED packs only: the pack's ed25519
+    attestation is verified BEFORE the entry is enqueued — an unsigned or
+    bad-signature pack is a typed reject (:class:`MissingAttestationError`
+    / :class:`AttestationVerifyError`) and never enters
+    ``propagation.jsonl``. (The accept-list is an INTAKE concern and is
+    deliberately NOT checked here: a pending entry records that a
+    delivery was attempted, and authorization is enforced when the retry
+    reaches intake.)
+
+    The durable entry carries the pack's own ``pack_digest`` /
+    ``source_root`` (signature-bound values from the pack body, not
+    caller-supplied), the attempt timestamp ``at``, a ``retry_count``
+    (0 for a first attempt) and ``next_attempt_at`` (when the next retry
+    becomes eligible; the enqueue time for a fresh entry). Fail-closed:
+    an unacked propagation is not evidence of propagation — a pending
+    line never influences ``verify_receipt`` and must never be presented
+    as proof of erasure.
     """
+    now = now or utc_now()
+    body = _verify_pack_signed_only(pack)
     entry = {
-        "pack_digest": pack_digest,
-        "source_root": source_root,
+        "pack_digest": body["pack_digest"],
+        "source_root": body["source_root"],
         "status": "pending",
         "ack_digest": None,
-        "at": now or utc_now(),
+        "at": now,
+        "retry_count": int(retry_count),
+        "next_attempt_at": next_attempt_at if next_attempt_at is not None else now,
     }
     _append_propagation_line(_as_service(root).root, entry)
     return entry
+
+
+def _verify_pack_signed_only(pack):
+    """Verify ONLY the ed25519 attestation of a pack (no accept-list, no
+    digest chain). Shared by the pending-enqueue gate and the retry path:
+    unsigned packs never enter or traverse the pending channel."""
+    if not isinstance(pack, dict) or not isinstance(pack.get("pack"), dict):
+        raise MissingAttestationError(
+            "propagation pack is missing required field 'attestation_sig' "
+            "(pending channel carries signed packs only, SPEC 1.2.8)"
+        )
+    sig_hex = pack.get("attestation_sig")
+    if not isinstance(sig_hex, str):
+        raise MissingAttestationError(
+            "propagation pack is missing required field 'attestation_sig' "
+            "(pending channel carries signed packs only, SPEC 1.2.8)"
+        )
+    problems = attestation_problems(pack, body_field="pack")
+    if problems:
+        raise AttestationVerifyError(
+            f"propagation pack attestation does not verify: "
+            f"{'; '.join(problems)}"
+        )
+    return pack["pack"]
+
+
+def _plus_seconds(timestamp, seconds):
+    """Deterministic RFC3339 arithmetic (whole-second UTC 'Z' form)."""
+    dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    dt = dt.astimezone(timezone.utc) + timedelta(seconds=seconds)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def retry_pending_propagation(root, pack, *, now=None,
+                              lock_timeout=DEFAULT_LOCK_TIMEOUT):
+    """One retry attempt of a pending propagation (SPEC 1.2.8).
+
+    Deterministic (clock injected via ``now``; no wall-clock reads in the
+    logic):
+
+    - the pack must be signed — an unsigned pack is a typed reject and
+      never enters/traverses the pending channel;
+    - a dead-lettered entry is TERMINAL: retrying it raises the typed
+      :class:`DeadLetterPropagationError` (visible, never an infinite
+      retry, never a silent drop);
+    - on success the intake appends its ``acked`` line, which resolves
+      the pending entry (the journal is append-only, so the resolution is
+      a new line — the attempts-audit philosophy of BACKLOG M3 round-2
+      advisory 1, unchanged); returns ``{"status": "acked", "ack": ack}``;
+    - on failure a new line is appended with ``retry_count`` incremented
+      and ``next_attempt_at = now + RETRY_BACKOFF_SECONDS * retry_count``;
+      once the counter passes :data:`MAX_PROPAGATION_RETRIES` the line's
+      status is ``dead-lettered`` (typed-visible via
+      :func:`dead_lettered_entries`). Returns the new entry.
+
+    The whole retry holds the destination root's advisory lock (audit §3).
+    """
+    service = _as_service(root)
+    with service._root_lock(lock_timeout):
+        now = now or utc_now()
+        body = _verify_pack_signed_only(pack)
+        pack_digest = body["pack_digest"]
+        entries = [
+            e for e in read_propagation_journal(service.root)
+            if e["pack_digest"] == pack_digest
+        ]
+        if entries and entries[-1]["status"] == "dead-lettered":
+            raise DeadLetterPropagationError(
+                f"pending propagation {pack_digest[:16]}... is dead-lettered "
+                f"after {MAX_PROPAGATION_RETRIES} failed retries (SPEC 1.2.8); "
+                f"dead-lettered entries are terminal — listed by "
+                f"dead_lettered_entries(), never retried, never dropped"
+            )
+        try:
+            ack = _import_propagation_pack_locked(service, pack, now=now)
+        except (PropagationError, AttestationError) as err:
+            # The retry failed again: increment the counter durably.
+            previous = entries[-1]["retry_count"] if entries else 0
+            retry_count = previous + 1
+            dead = retry_count > MAX_PROPAGATION_RETRIES
+            entry = {
+                "pack_digest": pack_digest,
+                "source_root": body["source_root"],
+                "status": "dead-lettered" if dead else "pending",
+                "ack_digest": None,
+                "at": now,
+                "retry_count": retry_count,
+                "next_attempt_at": _plus_seconds(
+                    now, RETRY_BACKOFF_SECONDS * retry_count
+                ),
+            }
+            _append_propagation_line(service.root, entry)
+            return entry
+        return {"status": "acked", "ack": ack}
+
+
+def dead_lettered_entries(root):
+    """Every dead-lettered propagation entry, in write order (SPEC 1.2.8).
+
+    Dead-lettered entries are typed-visible: they are NEVER silently
+    dropped and never retried again. An operator resolves a dead-letter by
+    deliberate intervention (fix the source/authorization, then handle the
+    pack as a fresh intake).
+    """
+    return [
+        entry for entry in read_propagation_journal(root)
+        if entry["status"] == "dead-lettered"
+    ]
+
+
+def pending_propagation_entries(root):
+    """Latest state of every pack_digest whose current status is
+    ``pending`` (chronological by last line), with the entry's
+    ``next_attempt_at`` eligibility visible."""
+    latest = {}
+    for entry in read_propagation_journal(root):
+        latest[entry["pack_digest"]] = entry
+    return [
+        entry for _digest, entry in sorted(
+            latest.items(), key=lambda kv: (kv[1]["at"], kv[1]["pack_digest"])
+        )
+        if entry["status"] == "pending"
+    ]
 
 
 def _read_ack(path):
@@ -392,9 +671,17 @@ def read_propagation_journal(root):
     Corrupt lines raise :class:`PropagationJournalError` naming the line
     (A-15 hygiene: a loud typed error, never a bare JSONDecodeError).
     Decode hygiene (M3 round-2 verify advisory 2): the journal is read as
-    bytes and each line decoded explicitly — invalid UTF-8 raises the
-    typed error with path:lineno, never a bare UnicodeDecodeError (the L1
+    bytes and each line decoded explicitly — invalid UTF-8 raises the typed
+    error with path:lineno, never a bare UnicodeDecodeError (the L1
     ``journal_tombstones`` reader shares this pattern).
+
+    Line shape: the five pre-Round-B keys (``pack_digest``,
+    ``source_root``, ``status``, ``ack_digest``, ``at``) are required on
+    every line; ``retry_count`` (non-negative integer) and
+    ``next_attempt_at`` (RFC3339 string or null, SPEC 1.2.8) are
+    validated when present — pre-1.2.8 lines without them stay readable
+    (tolerant reader; the journal is append-only). Status is one of
+    ``pending`` / ``acked`` / ``dead-lettered``.
     """
     path = _as_service(root).root / "propagation.jsonl"
     if not path.exists():
@@ -420,11 +707,25 @@ def read_propagation_journal(root):
             raise PropagationJournalError(
                 f"corrupt propagation journal {path}:{lineno}: bad entry"
             )
-        if entry["status"] not in ("pending", "acked"):
+        if entry["status"] not in ("pending", "acked", "dead-lettered"):
             raise PropagationJournalError(
                 f"corrupt propagation journal {path}:{lineno}: "
                 f"unknown status {entry['status']!r}"
             )
+        if "retry_count" in entry:
+            rc = entry["retry_count"]
+            if not isinstance(rc, int) or isinstance(rc, bool) or rc < 0:
+                raise PropagationJournalError(
+                    f"corrupt propagation journal {path}:{lineno}: "
+                    f"retry_count must be a non-negative integer"
+                )
+        if "next_attempt_at" in entry:
+            na = entry["next_attempt_at"]
+            if na is not None and not isinstance(na, str):
+                raise PropagationJournalError(
+                    f"corrupt propagation journal {path}:{lineno}: "
+                    f"next_attempt_at must be an RFC3339 string or null"
+                )
         entries.append(entry)
     return entries
 

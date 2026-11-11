@@ -85,6 +85,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from mbcp import (  # public API only
     L1DeletionService,
+    authorize_source,
     canonical_bytes,
     canonical_sha256,
     export_propagation_pack,
@@ -226,6 +227,28 @@ def _check_propagate(scenario, expect):
             )
             if scenario["input"].get("tamper") == "first-tombstone-reason":
                 pack["pack"]["tombstones"][0]["reason"] += " (tampered)"
+            # M4 Round B (SPEC 1.2.7): intake is fail-closed — unless the
+            # scenario explicitly models an unauthorized root, authorize
+            # the pack's source key at the destination before import
+            # (multi-root deployments configure accept-lists as a normal
+            # conformance requirement).
+            if scenario["input"].get("authorize_wrong_key"):
+                # accept-list configured but with an UNRELATED key: the
+                # pack's key_id is unknown -> AuthorizationRejectedError
+                from mbcp import generate_keypair
+                from mbcp.attestation import key_id_for_pubkey
+                foreign = generate_keypair()
+                authorize_source(
+                    dest.root,
+                    key_id_for_pubkey(foreign.pubkey),
+                    foreign.pubkey_hex,
+                )
+            elif not scenario["input"].get("no_authorize"):
+                authorize_source(
+                    dest.root,
+                    pack["pack"]["key_id"],
+                    pack["pack"]["attestation_pubkey"],
+                )
             import_propagation_pack(dest.root, pack, now=fixed_now)
         except Exception as err:  # noqa: BLE001
             if expect.get("error") != type(err).__name__:
