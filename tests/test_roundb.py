@@ -322,6 +322,34 @@ def test_pack_import_verifies_signature_before_digest_chain():
         )
 
 
+def test_intake_authorization_gate_runs_before_the_digest_chain_gate():
+    # ADV-B3 (M4 Round B mini): the SAME digest-broken, source-re-signed
+    # pack that test_pack_import_verifies_signature_before_digest_chain
+    # proves fails at the digest-chain layer must instead fail with
+    # AuthorizationRejectedError when the destination does NOT list the
+    # source key. The signature still verifies (the source key signed the
+    # broken bytes), so the failure can only come from the accept-list
+    # gate — which therefore provably runs BEFORE _validate_pack.
+    # An unrelated key IS listed here, so this pins the ordering rather
+    # than the absent-config fail-closed path (pinned separately below).
+    with tempfile.TemporaryDirectory() as tmp:
+        _source, pack = _delete_and_export(tmp)
+        dest = _service(tmp, "dest")
+        foreign = generate_keypair()
+        authorize_source(dest.root, foreign.key_id, foreign.pubkey_hex)
+        broken = json.loads(json.dumps(pack))
+        broken["pack"]["tombstone_digests"] = []  # digest-chain break
+        source_key = load_keypair(Path(tmp) / "source")
+        del broken["attestation_sig"]
+        del broken["pack"]["key_id"]
+        del broken["pack"]["attestation_pubkey"]
+        broken = sign_envelope(broken, source_key, body_field="pack")
+        assert_raises(
+            AuthorizationRejectedError,
+            import_propagation_pack, dest.root, broken, now=T1,
+        )
+
+
 # ---------------------------------------------------------------------------
 # FIX 3: intake authorization accept-list (fail-closed matrix)
 # ---------------------------------------------------------------------------

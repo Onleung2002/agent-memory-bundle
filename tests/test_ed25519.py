@@ -1,11 +1,17 @@
 """RFC 8032 known-answer pins for the vendored ed25519 (mbcp/_ed25519.py).
 
-The vendored module follows the public-domain reference code published in
-RFC 8032 §8; these §7.1 vectors are the conformance gate for it. The
-vectors were verified verbatim against rfc-editor.org/rfc8032.txt AND
-cross-checked against OpenSSL 3.5.7 (key derivation + signatures on the
-non-empty-message vectors) during M4 Round B — a mutation to the vendored
-math must turn this file red.
+The vendored module is the public-domain "slow" affine Python reference
+for ed25519 (Bernstein et al., ed25519.cr.yp.to), implementing the scheme
+RFC 8032 §5.1 specifies; RFC 8032's own Python listing is Appendix A,
+which implements the same scheme in a different code style. These §7.1
+vectors are the conformance gate for the vendored math — a mutation to it
+must turn this file red. The vectors were transcribed from
+rfc-editor.org/rfc8032.txt; there is no independent second implementation
+in this repo or this environment (no ``cryptography``/PyNaCl, no network),
+so cross-implementation agreement is NOT claimed here.
+
+Only the §7.1 pure-ed25519 vectors apply: the module has no dom2/context
+support, so the §7.2 ``ctx`` variants are out of scope.
 
 Performance note: the reference implementation is deliberately slow
 (affine coordinates, per-addition inversion); the suite accepts that.
@@ -89,6 +95,39 @@ def test_rfc8032_checkvalid_rejects_wrong_key():
     sig = bytes.fromhex(vector["signature"])
     other_public = bytes.fromhex(TEST_VECTORS[0]["public"])
     assert _ed25519.checkvalid(sig, message, other_public) is False
+
+
+def test_malleated_signature_scalars_are_rejected():
+    # ADV-B1 (M4 Round B mini): S is an element of [0, L), so adding the
+    # group order L to a valid S yields a DIFFERENT scalar that the
+    # cofactorless verification equation accepts just the same (the point
+    # [L]B is the identity). RFC 8032 §5.1.7 rejects S >= L at decode
+    # time; the vendored reference does not, so checkvalid must do it.
+    # Without this check every MBCP receipt/pack has 2^32+ valid
+    # signatures instead of one, and "the" attestation_sig is ambiguous.
+    vector = TEST_VECTORS[1]
+    public = bytes.fromhex(vector["public"])
+    message = bytes.fromhex(vector["message"])
+    sig = bytes.fromhex(vector["signature"])
+    canonical_s = _ed25519._decode_int(sig[32:])
+
+    # the canonical signature verifies, and its S really is in range
+    assert canonical_s < _ed25519._l
+    assert _ed25519.checkvalid(sig, message, public) is True
+
+    for multiple in (1, 2):
+        malleated_s = canonical_s + multiple * _ed25519._l
+        malleated = sig[:32] + _ed25519._encode_int(malleated_s)
+        assert len(malleated) == 64  # still a well-formed 64-byte sig
+        try:
+            _ed25519.checkvalid(malleated, message, public)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"S + {multiple}*L malleation verified — checkvalid is "
+                f"malleable (ADV-B1 regression)"
+            )
 
 
 def test_rfc8032_signing_is_deterministic():

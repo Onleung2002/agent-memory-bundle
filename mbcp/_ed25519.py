@@ -1,10 +1,15 @@
 """Pure-Python ed25519 (RFC 8032) — vendored reference implementation.
 
-PROVENANCE: this module follows the public-domain reference Python code
-published in RFC 8032 §8.7 (and the test vectors in §7.1 are pinned in
-tests/test_ed25519.py). It is vendored because this environment has no
-``cryptography``/PyNaCl and no network access; the MBCP L4 attestation
-layer (mbcp.attestation) needs a self-contained ed25519.
+PROVENANCE: this module is the public-domain "slow" affine Python
+reference for ed25519 (Bernstein, Duif, Lange, Schwabe, Yang —
+ed25519.cr.yp.to), implementing the scheme RFC 8032 specifies in §5.1.
+RFC 8032 carries its own Python listing in Appendix A, which implements
+the SAME scheme in a different code style (``modp_*`` / ``secret_expand``
+/ ``point_mul``); this module is NOT that listing. The conformance gate
+is the RFC 8032 §7.1 vectors pinned in tests/test_ed25519.py. It is
+vendored because this environment has no ``cryptography``/PyNaCl and no
+network access; the MBCP L4 attestation layer (mbcp.attestation) needs a
+self-contained ed25519.
 
 Scope is deliberately minimal — the three primitives the profile uses:
 
@@ -27,8 +32,28 @@ Security notes (honest framing):
   private key signed the bytes, not WHO that key belongs to. Binding a
   key to an identity needs an out-of-band anchor (SPEC 1.2.6).
 - ``checkvalid`` raises on structurally invalid input (wrong lengths,
-  off-curve points) rather than returning False, so callers must treat
-  exceptions as verification failure — never as validity.
+  off-curve points, non-canonical S) rather than returning False, so
+  callers must treat exceptions as verification failure — never as
+  validity.
+- ``checkvalid`` enforces the RFC 8032 §5.1.7 canonical-scalar check: a
+  signature whose ``S`` decodes outside ``[0, L)`` raises instead of
+  verifying. Without it, ``S + L`` / ``S + 2L`` malleations of a valid
+  signature would ALSO verify (pinned in tests/test_ed25519.py).
+- There is NO dom2/context support: only pure ed25519 (RFC 8032 §5.1) is
+  implemented, so the §7.2 ``ctx`` variants are out of scope and none of
+  those vectors apply to this module.
+- Known limitation (recorded, not defended): the verification equation is
+  the reference's cofactorless form ``[S]B == R + [k]A``, which RFC 8032
+  §5.1.7 explicitly permits ("sufficient, but not required") in place of
+  the cofactored ``[8][S]B == [8]R + [8][k]A'``, and ``_decode_point``
+  (the reference's ``decodepoint``) accepts small-order and
+  non-canonically-encoded points instead of rejecting them. This module
+  is therefore NOT hardened against malicious public keys. The L4 gates
+  narrow the exposure — the attestation check binds the embedded pubkey
+  to its ``key_id`` fingerprint and the accept-list gate (SPEC 1.2.7)
+  only admits listed (key_id, pubkey) pairs — but a hostile pubkey still
+  reaches :func:`checkvalid` before the accept-list gate runs, so do not
+  treat this module as a general-purpose verifier.
 """
 
 import hashlib
@@ -69,7 +94,7 @@ _B = [_Bx % _q, _BY % _q]  # the ed25519 base point
 
 
 def _edwards_add(P, Q):
-    """Edwards point addition (affine coordinates, RFC 8032 §8.7)."""
+    """Edwards point addition (affine coordinates, reference form)."""
     x1, y1 = P
     x2, y2 = Q
     x3 = (x1 * y2 + x2 * y1) * _inv(1 + _d * x1 * x2 * y1 * y2)
@@ -127,7 +152,8 @@ def _is_on_curve(P):
 
 
 def _clamp_scalar(h):
-    """Derive the signing scalar from the hashed seed (RFC 8032 §5.1.5)."""
+    """Derive the signing scalar from the hashed seed (the reference's
+    clamp — RFC 8032 §5.1 pruning)."""
     return 2 ** (_b - 2) + sum(
         2 ** i * _bit(h, i) for i in range(3, _b - 2)
     )
@@ -175,9 +201,9 @@ def checkvalid(sig, message, public_key):
     """Verify ``sig`` over ``message`` against ``public_key``.
 
     Returns True only on a valid signature. Raises ValueError on
-    structurally invalid input (bad lengths, off-curve points) — callers
-    MUST treat any exception as verification failure (fail-closed), never
-    as validity.
+    structurally invalid input (bad lengths, off-curve points, a
+    non-canonical ``S``) — callers MUST treat any exception as
+    verification failure (fail-closed), never as validity.
     """
     if not isinstance(sig, (bytes, bytearray)) or len(sig) != _b // 4:
         raise ValueError("ed25519 signature must be 64 bytes")
@@ -191,5 +217,13 @@ def checkvalid(sig, message, public_key):
     R = _decode_point(sig[: _b // 8])
     A = _decode_point(public_key)
     S = _decode_int(sig[_b // 8: _b // 4])
+    # RFC 8032 §5.1.7: S must decode into [0, L); a signature whose S is
+    # out of range is invalid. The reference omits this check, which makes
+    # it malleable: S + L and S + 2L verify just as well as S. Rejecting
+    # here keeps one valid signature per (key, message).
+    if S >= _l:
+        raise ValueError(
+            "ed25519 signature scalar S is not canonical (S >= L)"
+        )
     h = _hint(_encode_point(R) + public_key + message)
     return _scalarmult(_B, S) == _edwards_add(R, _scalarmult(A, h))
