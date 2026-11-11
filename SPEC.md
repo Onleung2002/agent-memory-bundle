@@ -91,6 +91,29 @@ L1 receipt 係 immutable artifact——`recover()` 移除咗 receipt 未報告�
 > constants) raises a typed `DeletionError` naming the file. The delete/verify scan is fail-closed: any
 > unreadable manifest raises typed and is never treated as absent.
 
+### 1.2.6 L4 cryptographic attestation（v0.1 Round B：ed25519 簽名）
+
+> **簽乜（兩個 artifact）：**
+> 1. **Deletion receipt envelope**：對 `{integrity, receipt}` canonical bytes 做 **ed25519** 簽名。Receipt 加 `attestation_sig`（hex128）+ `key_id` 欄位。`verify_receipt` 加 signature 驗證步——**fail-closed**：簽名缺失、簽名不符 key、或 envelope tampered，三式全部 typed reject（named problem，冇 silent downgrade）。
+> 2. **Propagation pack**：pack-level 簽名，同一 root keypair；intake 驗簽先收——現有 attestation digest chain 之上加 signature 層。
+>
+> **Key 管理模型（Isaac 裁決 2026-11-10）：**
+> - **Per-root keypair**：private key 檔案喺 service root 底（`.mbcp.key`，permissions 0600，dotfile 排除所有掃描/inventory，同 `.mbcp.lock` 同款）；public key 內嵌 receipt + 對應 `key_id`。
+> - **Passphrase 保護唔做**（0600 就夠；passphrase 會令 unattended delete/recover flow 破功）。
+> - **Key rotation 語意延後**（`key_id` 已預留；rotation 語意 G2 前定）。
+> - **誠實威脅模型（一字唔准美化）**：private key 同 store 同 root——**store 被完全攻破等於 key 被攻破**；簽名防「局部篡改」（改 receipt/pack 內容、偽造第三者 receipt），唔防「全 root compromise」。第三方驗證需要 out-of-band pubkey anchor（conformance registry record 或 export 內 pubkey 欄）——呢個係 regulator 用例嘅正確路徑，簽名本身唔提供 trust root。
+>
+> **術語法照舊**：GOVERNANCE 原則 2 適用——簽名係 attestation 強化，唔產生 certificate/certified 狀態；升級路徑措辭 = self-declaration → verifier-attested → **cryptographically-signed**。
+
+### 1.2.7 Propagation intake authorization（v0.1 audit §5 收緊：fail-closed）
+
+> Propagation intake **必須 fail-closed**：root 未配置 authorized-source accept-list 時，**typed reject 所有 pack**——唔設「accepted-unverified 照收」行為 tier。理由（Isaac 裁決 2026-11-10）：呢個係 §1.2「刪除訊號必須 authentic」（Round C Batch 1 §10 裁定）喺 L2 嘅直接延伸——unverified pack 可以觸發刪除，等於未認證刪除通道由 L2 重返，同成個 Round C 收緊方向自相矛盾。多 root 部署 config accept-list 係 conformance 正常要求。
+> Accept-list 係 root config 檔（授權 source 嘅 `key_id` + pubkey）；verified/unverified 分級**只准喺 intake receipt 記錄層做觀測**（記 intake 等級），唔可以做行為 tier。
+
+### 1.2.8 Pending retry semantics（v0.1 audit §15 收緊）
+
+> Pending propagation entry 帶 retry 計數 + `next_attempt_at`；成功 ack 後移除；重複失敗超過上限進入**死信狀態**（typed visible，唔會無限 retry；唔會靜默放棄）。**Retry 只重發已簽名 pack**——未簽名 pack 唔進 pending 通道。
+
 ### 1.3 consent 繼承（UMP）+ 跨 profile 一致
 UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：consent 違反 = conformance fail（唔係 warning）。
 
