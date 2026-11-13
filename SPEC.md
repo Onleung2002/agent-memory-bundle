@@ -62,7 +62,7 @@ L1 receipt 係 immutable artifact——`recover()` 移除咗 receipt 未報告�
 > writers, NOT a security boundary: the lock is advisory, the OS releases it if a holder crashes, and removing
 > the lock file while held voids cross-process exclusion. Same-process re-entrancy (nested locked calls on one
 > thread) is enforced by a per-root owner plus condition variable with a per-thread held count, and never
-> `put_bundle` and propagation export (`export_propagation_pack`) are also under the lock for their full
+> self-deadlocks. `put_bundle` and propagation export (`export_propagation_pack`) are also under the lock for their full
 > duration (ADV-C2-3 closed 2026-11-10): a put can no longer land mid-delete (the born-inventory-divergent
 > receipt hole) and an export cannot read the journal torn mid-delete. `record_pending_propagation` stays
 > outside the lock by design — it appends one O_APPEND line (best-effort attempts audit, never consulted by
@@ -104,6 +104,11 @@ L1 receipt 係 immutable artifact——`recover()` 移除咗 receipt 未報告�
 > - **誠實威脅模型（一字唔准美化）**：private key 同 store 同 root——**store 被完全攻破等於 key 被攻破**；簽名防「局部篡改」（改 receipt/pack 內容、偽造第三者 receipt），唔防「全 root compromise」。第三方驗證需要 out-of-band pubkey anchor（conformance registry record 或 export 內 pubkey 欄）——呢個係 regulator 用例嘅正確路徑，簽名本身唔提供 trust root。
 >
 > **術語法照舊**：GOVERNANCE 原則 2 適用——簽名係 attestation 強化，唔產生 certificate/certified 狀態；升級路徑措辭 = self-declaration → verifier-attested → **cryptographically-signed**。
+>
+> **Round B hotfix 收緊（second audit，2026-11-11）：**
+> - **Keypoint validation**：`authorize_source`/`load_keypair` 拒絕 small-order、identity、non-canonical encoding 嘅 pubkey（typed reject）——identity-pubkey 零私鑰偽造 primitive（W1）喺 accept-list 配置層封死。
+> - **Key loss ≠ first use**：`ensure_keypair` 係 fail-closed——root 內已存在任何 receipt/journal 而私鑰檔缺失時，typed error 要求顯式 rotate；**唔准靜默重生命名新 identity**（W2——靜默重生會令 third-party verifier 靜默失去 chain tail）。
+> - **Pending typed contract**：`retry_pending_propagation` 對所有 typed failure（包括 `DeletionError`）保證「失敗 → 新 pending line appended」契約；schema-invalid 但自洽簽名嘅 pack 喺 signed-only gate 就被拒；dead-lettered pack 唔可以經 `record_pending_propagation` 重新入隊（terminal 係真 terminal）。
 
 ### 1.2.7 Propagation intake authorization（v0.1 audit §5 收緊：fail-closed）
 

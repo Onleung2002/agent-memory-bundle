@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .venv/
+.mbcp.key
+.mbcp.lock
+.mbcp.authorized_sources.json
