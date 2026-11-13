@@ -79,6 +79,42 @@ class AttestationVerifyError(AttestationError):
     """
 
 
+class InvalidKeypointError(AttestationError):
+    """A public key is not a valid ed25519 trust anchor (audit 2, W1).
+
+    Raised when a pubkey decodes to the identity point, a small-order
+    (cofactor-subgroup) point, a non-canonically-encoded point
+    (``y >= q``), or a point off the curve. Such keys enable
+    zero-private-key signature forgeries at the cofactorless verification
+    equation (the identity pubkey plus ``(R=B, S=1)`` verifies with no
+    secret material at all), so they are rejected typed at every
+    trust-anchor layer: key load (:func:`load_keypair`), accept-list
+    enrollment (:func:`authorize_source`), and embedded-pubkey
+    verification (:func:`attestation_problems`).
+
+    Scope note (Isaac's minimal-diff ruling): this hardening lives one
+    layer ABOVE the vendored :mod:`mbcp._ed25519` core, which is left
+    untouched — ``checkvalid`` still accepts small-order pubkeys when
+    called directly; the L4 gates refuse to treat them as trust anchors.
+    """
+
+
+class KeyMaterialLostError(AttestationError):
+    """Key loss detected: ``.mbcp.key`` is missing but the root already
+    carries signed attestation history (audit 2, W2).
+
+    ``ensure_keypair`` refuses to silently mint a new identity when the
+    key file is gone but the root already holds receipt artifacts and/or
+    a propagation journal — silent regeneration would switch the root
+    identity mid-history: old receipts verify under the old embedded
+    pubkey and new ones under a new key_id, and a third-party verifier
+    anchored on the original pubkey silently loses the chain tail.
+    Key loss is NOT first use. Recovery is explicit: restore the key
+    file, or deliberately call :func:`rotate_keypair` (the escape hatch;
+    rotation semantics remain deferred per SPEC 1.2.6).
+    """
+
+
 class AuthorizationRejectedError(AttestationError):
     """Propagation intake rejected by the authorized-source accept-list.
 
@@ -128,6 +164,45 @@ def generate_keypair():
     return KeyPair(os.urandom(32))
 
 
+def validate_keypoint_pubkey(pubkey):
+    """Reject pubkeys that are not valid ed25519 trust anchors (W1).
+
+    ``pubkey`` is the raw 32-byte encoding. A valid anchor must decode to
+    a prime-order curve point: this rejects the identity encoding
+    (``0x01 || 0x00*31``), every small-order point (any ``P`` with
+    ``8*P == identity`` — the cofactor subgroup), non-canonical
+    encodings (``y >= q``), and off-curve encodings. Uses the vendored
+    :mod:`mbcp._ed25519` decode/scalarmult primitives only — the
+    vendored sign/verify paths are not modified. Returns the pubkey on
+    success; raises :class:`InvalidKeypointError` (typed) otherwise.
+    """
+    pubkey = bytes(pubkey)
+    if len(pubkey) != 32:
+        raise InvalidKeypointError(
+            f"ed25519 public key must be 32 bytes, got {len(pubkey)}"
+        )
+    # Canonical encoding: the low 255 little-endian bits are y and must
+    # be < q (the vendored _decode_point masks the sign bit but does not
+    # perform this check).
+    y = int.from_bytes(pubkey, "little") & ((1 << 255) - 1)
+    if y >= _ed25519._q:
+        raise InvalidKeypointError(
+            "non-canonical point encoding (y >= q)"
+        )
+    try:
+        point = _ed25519._decode_point(pubkey)
+    except ValueError as err:
+        raise InvalidKeypointError(
+            f"point is not on the edwards25519 curve: {err}"
+        ) from err
+    if _ed25519._scalarmult(point, 8) == [0, 1]:
+        raise InvalidKeypointError(
+            "small-order point (8*P == identity): identity/cofactor-"
+            "subgroup pubkeys enable zero-private-key signature forgeries"
+        )
+    return pubkey
+
+
 def keypair_from_seed_hex(seed_hex):
     """Rebuild a keypair from a hex-encoded 32-byte seed (fixtures/tests)."""
     return KeyPair(bytes.fromhex(seed_hex))
@@ -175,6 +250,9 @@ def load_keypair(root):
         pubkey = bytes.fromhex(data["pubkey_hex"])
     except (KeyError, TypeError, ValueError) as err:
         raise AttestationError(f"corrupt signing key {path}: {err}") from err
+    # W1 hardening: a key file carrying an identity/small-order/non-
+    # canonical pubkey is not a usable trust anchor — fail loud, typed.
+    validate_keypoint_pubkey(pubkey)
     keypair = KeyPair(seed, pubkey)
     if _ed25519.publickey(seed) != pubkey:
         raise AttestationError(
@@ -187,19 +265,83 @@ def load_keypair(root):
     return keypair
 
 
-def ensure_keypair(root):
-    """Load the root keypair, creating it (mode 0600) on first use.
+def _root_has_attestation_history(root):
+    """True when the root already carries signed attestation history:
+    any receipt artifact in ``receipts/`` and/or a non-empty
+    ``propagation.jsonl`` journal (audit 2, W2).
 
-    This is the ensure/rotate API shape chosen for Round B (documented in
-    the FIX-BY-FIX): automatic ensure on first signing use; explicit
-    rotation is DEFERRED with the rest of the rotation semantics (SPEC
-    1.2.6) — a future rotate re-keys via ``save_keypair`` under the root
-    lock.
+    This is the state that distinguishes KEY LOSS from FIRST USE for
+    :func:`ensure_keypair`: a genuinely empty root may mint a first-use
+    keypair; a root with history must not silently switch identity.
+    """
+    root = Path(root)
+    receipts_dir = root / "receipts"
+    if receipts_dir.is_dir():
+        try:
+            if any(receipts_dir.iterdir()):
+                return True
+        except OSError:
+            pass  # unreadable dir: the journal check below still decides
+    journal = root / "propagation.jsonl"
+    try:
+        if journal.exists() and journal.stat().st_size > 0:
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def ensure_keypair(root):
+    """Load the root keypair, creating it (mode 0600) on FIRST USE.
+
+    Fail-closed on key loss (audit 2, W2; SPEC 1.2.6 hotfix block): when
+    the key file is missing but the root already has attestation history
+    (any receipt artifact and/or a non-empty propagation journal), this
+    raises :class:`KeyMaterialLostError` naming the state — key loss is
+    not first use, and silently minting a new identity would leave
+    third-party verifiers anchored on the old pubkey silently missing
+    the chain tail. Only a genuinely empty root mints. Recovery is
+    explicit: restore the key file, or call :func:`rotate_keypair`.
     """
     keypair = load_keypair(root)
     if keypair is None:
+        if _root_has_attestation_history(root):
+            raise KeyMaterialLostError(
+                f"key material lost at {Path(root) / KEY_FILE_NAME}: the "
+                f"key file is missing but this root already carries "
+                f"attestation history (receipt artifacts and/or a "
+                f"propagation journal). Refusing to silently mint a new "
+                f"identity (audit W2) — restore the key file, or "
+                f"deliberately call rotate_keypair() as the explicit "
+                f"'the key is lost' action (rotation semantics remain "
+                f"deferred per SPEC 1.2.6)"
+            )
         keypair = generate_keypair()
         save_keypair(root, keypair)
+    return keypair
+
+
+def rotate_keypair(root):
+    """Explicitly replace the root keypair (audit 2, W2 escape hatch).
+
+    Honest contract — read before calling:
+
+    - This mints a NEW identity and PERMANENTLY discards the old key
+      material. There is no re-signing, no supersession link, no
+      revocation list: rotation SEMANTICS remain deferred (SPEC 1.2.6;
+      ``key_id`` is the reserved anchor, to be defined before G2).
+    - Old receipts still verify under their embedded pubkey
+      (verification is self-anchored); new artifacts sign under the new
+      key_id. A third-party verifier anchored on the old pubkey silently
+      loses the tail — that is exactly the loss this API makes
+      deliberate instead of silent.
+    - This exists ONLY as the explicit "I know the key is lost" action
+      that :func:`ensure_keypair` refuses to take implicitly. Callers
+      must serialize with writers (hold the root lock) like any other
+      root mutation.
+    """
+    keypair = generate_keypair()
+    save_keypair(root, keypair)
     return keypair
 
 
@@ -288,6 +430,17 @@ def attestation_problems(envelope, *, body_field):
             "key_id does not match the embedded attestation_pubkey "
             "(fingerprint mismatch)"
         )
+    # W1 hardening: refuse identity/small-order/non-canonical pubkeys as
+    # trust anchors BEFORE the cofactorless verification equation runs —
+    # the vendored checkvalid would accept a zero-secret forgery
+    # (identity pubkey + (R=B, S=1)) from such a key.
+    try:
+        validate_keypoint_pubkey(pubkey)
+    except InvalidKeypointError as err:
+        problems.append(
+            f"attestation_pubkey is not a valid trust anchor: {err}"
+        )
+        return problems
     try:
         valid = _ed25519.checkvalid(sig, signing_bytes(envelope), pubkey)
     except (ValueError, TypeError) as err:
@@ -358,7 +511,12 @@ def authorize_source(root, key_id, pubkey_hex):
     if not isinstance(pubkey_hex, str) or len(pubkey_hex) != PUBKEY_HEX_LENGTH:
         raise ValueError(f"pubkey must be {PUBKEY_HEX_LENGTH} hex chars")
     pubkey_hex = pubkey_hex.lower()
-    if key_id != key_id_for_pubkey(bytes.fromhex(pubkey_hex)):
+    # W1 hardening: never enroll an identity/small-order/non-canonical
+    # pubkey in the accept-list — enrollment is the trust-anchor layer,
+    # so a bogus key is refused here typed instead of at intake time.
+    pubkey = bytes.fromhex(pubkey_hex)
+    validate_keypoint_pubkey(pubkey)
+    if key_id != key_id_for_pubkey(pubkey):
         raise ValueError("key_id does not match the given pubkey")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)

@@ -94,6 +94,7 @@ from .canonical import (
 )
 from .deletion import (
     DEFAULT_LOCK_TIMEOUT,
+    DeletionError,
     L1DeletionService,
     _atomic_write,
     _fsync_dir,
@@ -501,14 +502,34 @@ def record_pending_propagation(root, pack, *, now=None, retry_count=0,
     The durable entry carries the pack's own ``pack_digest`` /
     ``source_root`` (signature-bound values from the pack body, not
     caller-supplied), the attempt timestamp ``at``, a ``retry_count``
-    (0 for a first attempt) and ``next_attempt_at`` (when the next retry
-    becomes eligible; the enqueue time for a fresh entry). Fail-closed:
-    an unacked propagation is not evidence of propagation — a pending
-    line never influences ``verify_receipt`` and must never be presented
-    as proof of erasure.
+    (0 for a first attempt) and ``next_attempt_at`` — an ADVISORY backoff
+    hint recording when the next retry becomes eligible per the
+    deterministic backoff schedule (the enqueue time for a fresh entry).
+    Hotfix ruling (audit 2, H6): ``retry_pending_propagation`` does NOT
+    gate on ``next_attempt_at`` — backoff is advisory metadata, not a
+    throttle; a scheduled caller uses it to decide WHEN to call retry.
+    Fail-closed: an unacked propagation is not evidence of propagation —
+    a pending line never influences ``verify_receipt`` and must never be
+    presented as proof of erasure.
+
+    Terminal is terminal (audit 2, W8; SPEC 1.2.8): re-enqueueing a pack
+    whose LAST journal line is dead-lettered is a typed
+    :class:`DeadLetterPropagationError` — dead-lettered entries are never
+    resurrected into the pending channel.
     """
+    service_root = _as_service(root).root
     now = now or utc_now()
     body = _verify_pack_signed_only(pack)
+    prior = [
+        e for e in read_propagation_journal(service_root)
+        if e["pack_digest"] == body["pack_digest"]
+    ]
+    if prior and prior[-1]["status"] == "dead-lettered":
+        raise DeadLetterPropagationError(
+            f"pending propagation {body['pack_digest'][:16]}... is "
+            f"dead-lettered (SPEC 1.2.8): dead-lettered entries are "
+            f"terminal — refusing re-enqueue via record_pending_propagation"
+        )
     entry = {
         "pack_digest": body["pack_digest"],
         "source_root": body["source_root"],
@@ -518,14 +539,20 @@ def record_pending_propagation(root, pack, *, now=None, retry_count=0,
         "retry_count": int(retry_count),
         "next_attempt_at": next_attempt_at if next_attempt_at is not None else now,
     }
-    _append_propagation_line(_as_service(root).root, entry)
+    _append_propagation_line(service_root, entry)
     return entry
 
 
 def _verify_pack_signed_only(pack):
-    """Verify ONLY the ed25519 attestation of a pack (no accept-list, no
-    digest chain). Shared by the pending-enqueue gate and the retry path:
-    unsigned packs never enter or traverse the pending channel."""
+    """Verify the ed25519 attestation of a pack AND schema-validate its
+    body (audit 2, W7) — no accept-list, no digest chain.
+
+    Shared by the pending-enqueue gate and the retry path: unsigned packs
+    never enter or traverse the pending channel, and a schema-invalid
+    pack (even a self-consistently SIGNED one) is a typed reject HERE —
+    never a raw ``KeyError('pack_digest')`` downstream when the entry is
+    indexed. Gate order: signature first, then schema.
+    """
     if not isinstance(pack, dict) or not isinstance(pack.get("pack"), dict):
         raise MissingAttestationError(
             "propagation pack is missing required field 'attestation_sig' "
@@ -543,6 +570,10 @@ def _verify_pack_signed_only(pack):
             f"propagation pack attestation does not verify: "
             f"{'; '.join(problems)}"
         )
+    try:
+        _schema.validate(pack, _pack_schema())
+    except _schema.ValidationError as err:
+        raise PackValidationError(f"invalid propagation pack: {err}") from err
     return pack["pack"]
 
 
@@ -570,10 +601,19 @@ def retry_pending_propagation(root, pack, *, now=None,
       a new line — the attempts-audit philosophy of BACKLOG M3 round-2
       advisory 1, unchanged); returns ``{"status": "acked", "ack": ack}``;
     - on failure a new line is appended with ``retry_count`` incremented
-      and ``next_attempt_at = now + RETRY_BACKOFF_SECONDS * retry_count``;
-      once the counter passes :data:`MAX_PROPAGATION_RETRIES` the line's
-      status is ``dead-lettered`` (typed-visible via
-      :func:`dead_lettered_entries`). Returns the new entry.
+      and ``next_attempt_at = now + RETRY_BACKOFF_SECONDS * retry_count``
+      (advisory — not enforced, see :func:`record_pending_propagation`);
+      the counter reads the LAST journal line for the pack via
+      ``entries[-1].get("retry_count", 0)`` so a retry-after-ack (the last
+      line is an acked one, which carries no counter) restarts from 0
+      instead of crashing with KeyError (audit 2, W6); once the counter
+      passes :data:`MAX_PROPAGATION_RETRIES` the line's status is
+      ``dead-lettered`` (typed-visible via
+      :func:`dead_lettered_entries`). Returns the new entry. The typed
+      contract (SPEC 1.2.6 hotfix block): EVERY typed failure of the
+      import attempt — PropagationError, AttestationError, and
+      DeletionError from the tombstone-first apply alike — lands in this
+      branch; retry never lets one escape raw (audit 2, W5).
 
     The whole retry holds the destination root's advisory lock (audit §3).
     """
@@ -595,9 +635,14 @@ def retry_pending_propagation(root, pack, *, now=None,
             )
         try:
             ack = _import_propagation_pack_locked(service, pack, now=now)
-        except (PropagationError, AttestationError) as err:
+        except (PropagationError, AttestationError, DeletionError) as err:
             # The retry failed again: increment the counter durably.
-            previous = entries[-1]["retry_count"] if entries else 0
+            # Typed contract (SPEC 1.2.6 hotfix block): ANY typed failure
+            # inside the import attempt lands here — including DeletionError
+            # from the tombstone-first apply (audit 2, W5: a corrupt
+            # destination manifest must produce a new pending line, never
+            # a raw crash out of retry).
+            previous = entries[-1].get("retry_count", 0) if entries else 0
             retry_count = previous + 1
             dead = retry_count > MAX_PROPAGATION_RETRIES
             entry = {
@@ -632,8 +677,9 @@ def dead_lettered_entries(root):
 
 def pending_propagation_entries(root):
     """Latest state of every pack_digest whose current status is
-    ``pending`` (chronological by last line), with the entry's
-    ``next_attempt_at`` eligibility visible."""
+    ``pending`` (chronological by last line), with the entry's advisory
+    ``next_attempt_at`` visible (not enforced — see
+    :func:`record_pending_propagation`)."""
     latest = {}
     for entry in read_propagation_journal(root):
         latest[entry["pack_digest"]] = entry
