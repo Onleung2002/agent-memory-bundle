@@ -45,7 +45,7 @@ from mbcp import (
     make_tombstone,
 )
 
-from syn import FIXED_TS, assert_raises, write_bundle_direct
+from syn import FIXED_TS, assert_raises, syn_keypair, write_bundle_direct
 
 
 def _service(tmp):
@@ -82,6 +82,20 @@ def _grow_recovery(service, variant="STALE variant"):
     write_bundle_direct(service, build_bundle("bundle-stale", records=[stale]))
     assert service.recover() == ["rec-002"]
     return stale["integrity"]["digest"]
+
+
+FIXTURE_KEYPAIR = None
+
+
+def _fixture_keypair():
+    """Deterministic ed25519 key for hand-built receipt fixtures (M4
+    Round B: build_receipt signs; verify_receipt checks the signature
+    against the pubkey embedded in the receipt, so any key works for
+    these chain-logic fixtures)."""
+    global FIXTURE_KEYPAIR
+    if FIXTURE_KEYPAIR is None:
+        FIXTURE_KEYPAIR = syn_keypair()
+    return FIXTURE_KEYPAIR
 
 
 def _receipt_path(service, receipt):
@@ -192,7 +206,8 @@ def test_broken_chain_link_to_nonexistent_receipt():
             {"id": "rec-002", "integrity": {"digest": "ab" * 32}},
         ]
         r2 = build_receipt(
-            "bundle-alpha", tombstone, removed, supersedes="ff" * 32
+            "bundle-alpha", tombstone, removed, supersedes="ff" * 32,
+            keypair=_fixture_keypair(),
         )
         result = service.verify_receipt(r2)
         assert result["ok"] is False
@@ -219,6 +234,7 @@ def test_chain_link_to_digest_mismatched_receipt():
             tombstone,
             removed,
             supersedes=r1["integrity"]["digest"],
+            keypair=_fixture_keypair(),
         )
         result = service.verify_receipt(r2)
         assert result["ok"] is False
@@ -239,12 +255,16 @@ def test_circular_supersession_chain_detected():
         )
         removed = [{"id": "rec-002", "integrity": {"digest": "ab" * 32}}]
         fake_digest = "bb" * 32
-        b = build_receipt("bundle-alpha", tombstone, removed, supersedes=fake_digest)
+        b = build_receipt(
+            "bundle-alpha", tombstone, removed, supersedes=fake_digest,
+            keypair=_fixture_keypair(),
+        )
         a = build_receipt(
             "bundle-alpha",
             tombstone,
             removed,
             supersedes=b["integrity"]["digest"],
+            keypair=_fixture_keypair(),
         )
         a["integrity"]["digest"] = fake_digest
         _write_receipt(service, b)
@@ -263,7 +283,10 @@ def test_supersession_chain_crossing_targets_rejected():
             "rec-999", "other target erasure", deleted_at=DELETED_AT
         )
         other_removed = [{"id": "rec-999", "integrity": {"digest": "cd" * 32}}]
-        other = build_receipt("bundle-alpha", other_tomb, other_removed)
+        other = build_receipt(
+            "bundle-alpha", other_tomb, other_removed,
+            keypair=_fixture_keypair(),
+        )
         _write_receipt(service, other)
         tombstone = make_tombstone(
             "rec-002", "synthetic erasure", deleted_at=DELETED_AT
@@ -274,6 +297,7 @@ def test_supersession_chain_crossing_targets_rejected():
             tombstone,
             removed,
             supersedes=other["integrity"]["digest"],
+            keypair=_fixture_keypair(),
         )
         result = service.verify_receipt(r2)
         assert result["ok"] is False
@@ -295,6 +319,7 @@ def test_schema_rejects_malformed_supersedes():
             tombstone,
             removed,
             supersedes="not-hex",
+            keypair=_fixture_keypair(),
         )
         assert_raises(
             ReceiptValidationError,
@@ -303,6 +328,7 @@ def test_schema_rejects_malformed_supersedes():
             tombstone,
             removed,
             supersedes="ab" * 31,  # too short
+            keypair=_fixture_keypair(),
         )
 
 

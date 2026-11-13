@@ -8,10 +8,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mbcp import build_bundle, canonical_bytes, make_record, make_tombstone
+from mbcp import (
+    build_bundle,
+    canonical_bytes,
+    keypair_from_seed_hex,
+    make_record,
+    make_tombstone,
+)
 
 FIXED_TS = "2026-11-05T08:00:00Z"
 OWNER = "user-synthetic-01"
+
+# Deterministic ed25519 fixture keypair (M4 Round B): hand-built receipt
+# fixtures must be L4-signed to pass the schema/attestation gates, and a
+# FIXED seed keeps the fixtures reproducible. This is a published test
+# vector key — never a real profile key.
+SYN_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+
+
+def syn_keypair():
+    """The shared deterministic fixture keypair (RFC 8032 TEST 1 seed)."""
+    return keypair_from_seed_hex(SYN_SEED_HEX)
 
 
 def syn_record(record_id, body, **kwargs):

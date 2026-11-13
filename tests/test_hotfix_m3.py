@@ -183,9 +183,13 @@ def _split_root(tmp):
     src = L1DeletionService(Path(tmp) / "src", clock=lambda: D2)
     src.put_bundle(build_bundle("sb", records=[_record("rec-X", "copy")]))
     src.delete("sb", "rec-X", "gdpr", derived_artifacts=["b"])
-    mbcp.import_propagation_pack(
-        dest, mbcp.export_propagation_pack(src, source_root="root-src", now=D2)
+    # UPDATED-PIN (M4 Round B, SPEC 1.2.7): intake is fail-closed — the
+    # destination must authorize the source key before the import.
+    pack = mbcp.export_propagation_pack(src, source_root="root-src", now=D2)
+    mbcp.authorize_source(
+        dest.root, pack["pack"]["key_id"], pack["pack"]["attestation_pubkey"]
     )
+    mbcp.import_propagation_pack(dest, pack)
 
     # UPDATED-PIN (M4 round C1): the resurrected copy lands out-of-band
     # (put_bundle rejects tombstoned-id copies; Repro B's wedge state is

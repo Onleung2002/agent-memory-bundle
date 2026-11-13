@@ -2,11 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mbcp.dev/schemas/deletion-receipt.v0.json",
   "title": "MBCP L1 deletion receipt (v0)",
-  "description": "Receipt artifact emitted by the L1 deletion service. Scope is DELIBERATELY narrow: it proves the record is gone from one bundle and that a tombstone survives, and records (without proving) derived-artifact erasure. It is not an L4 erasure certificate.",
+  "description": "Receipt artifact emitted by the L1 deletion service, L4-attested (SPEC 1.2.6 Round B): the envelope carries a deterministic ed25519 attestation_sig over the canonical bytes of {integrity, receipt} (everything except the sig itself), produced by the issuing service root's per-root keypair; the receipt body embeds the key_id fingerprint and attestation_pubkey. Scope: the attestation proves the issuing root's key signed these bytes — it is strengthening of the attestation record, NOT third-party certification (no trust root; an out-of-band pubkey anchor is required for third-party verification).",
   "type": "object",
-  "required": ["receipt", "integrity"],
+  "required": ["receipt", "integrity", "attestation_sig"],
   "additionalProperties": false,
   "properties": {
+    "attestation_sig": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$",
+      "description": "Deterministic ed25519 signature (hex128) over the canonical bytes of this envelope WITHOUT the attestation_sig field — binds the integrity block and the whole receipt body (SPEC 1.2.6). Missing or non-verifying signatures are typed rejects; there is no verify-without-signature mode."
+    },
     "receipt": {
       "type": "object",
       "required": [
@@ -24,7 +29,9 @@
         "derived_artifacts",
         "derived_artifacts_verified",
         "propagation",
-        "limitations"
+        "limitations",
+        "key_id",
+        "attestation_pubkey"
       ],
       "additionalProperties": false,
       "properties": {
@@ -106,6 +113,16 @@
               "items": {"type": "string"}
             }
           }
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "Short fingerprint of attestation_pubkey (SHA-256[:16]) — the reserved key-rotation anchor (rotation semantics deferred, SPEC 1.2.6). Must match the embedded pubkey."
+        },
+        "attestation_pubkey": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "ed25519 public key of the issuing service root, embedded so the signature is verifiable from the artifact alone (SPEC 1.2.6). Verification is against THIS embedded key; binding the key to an identity needs an out-of-band anchor."
         },
         "supersedes": {
           "type": "string",

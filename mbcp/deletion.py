@@ -10,11 +10,19 @@ Level semantics (SPEC 1.2):
   them that way), so ``delete`` removes all same-id copies under the root
   before it will issue a receipt. L1 says nothing about propagation
   outside this root.
-- **L2–L4** (not implemented in M2): cross-bundle propagation, verified
-  derived-artifact erasure, third-party-verifiable erasure receipt. An L1
+- **L2** (mbcp.propagation): cross-root tombstone propagation through
+  signed propagation packs and a fail-closed authorized-source accept-list
+  (SPEC 1.2.6/1.2.7).
+- **L3** (not implemented): verified derived-artifact erasure. An L1
   receipt says so explicitly in ``limitations`` and carries
   ``derived_artifacts_verified: false`` — an L1 receipt must never be
-  presented as an erasure certificate.
+  presented as a verified-erasure certificate.
+- **L4** (attestation, implemented in M4 Round B): every receipt envelope
+  carries a deterministic ed25519 ``attestation_sig`` from the issuing
+  root's per-root keypair (SPEC 1.2.6). Honest framing: the signature
+  proves THIS root's key signed THESE bytes — it is attestation
+  strengthening, not certification; there is no trust root, and
+  third-party verification needs an out-of-band pubkey anchor.
 
 Durability / ordering guarantee (tombstone-first):
 
@@ -42,6 +50,9 @@ On-disk layout of a service root::
     recovery.jsonl               # recovery log: digest copies removed by recover()
     receipts/<receipt-id>.json   # L1 erasure receipts
     .mbcp.lock                   # root advisory lock file (flock; never data)
+    .mbcp.key                    # per-root ed25519 private seed (0600; L4
+                                 # attestation; dotfile excluded from every
+                                 # scan, same discipline as .mbcp.lock)
 
 Root advisory lock (audit §3, ADV-C2-3): :meth:`L1DeletionService.delete`,
 :meth:`L1DeletionService.put_bundle`, :meth:`L1DeletionService.recover`,
@@ -108,12 +119,17 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 import threading
 import time
 from pathlib import Path
 
 from . import _schema
+from ._io import _atomic_write, _fsync_dir
+from .attestation import (
+    attestation_problems,
+    ensure_keypair,
+    sign_envelope,
+)
 from .bundle import make_tombstone, validate_bundle, validate_tombstone
 from .canonical import (
     NonFiniteConstantError,
@@ -132,7 +148,11 @@ L1_LIMITATIONS = [
     "root and tombstones are retained; no propagation beyond this root (L2) "
     "is performed or proven.",
     "Derived artifacts are recorded but NOT verified as erased (L3).",
-    "This receipt is not a third-party-verifiable erasure certificate (L4).",
+    "This receipt is ed25519-signed by the issuing service root's key "
+    "(attestation strengthening, SPEC 1.2.6) — the signature proves the "
+    "issuing root signed these bytes, not third-party certification: it is "
+    "not an L4 erasure certificate, and third-party verification requires "
+    "an out-of-band pubkey anchor for the embedded key.",
 ]
 
 
@@ -305,39 +325,6 @@ def _receipt_schema():
     return _RECEIPT_SCHEMA
 
 
-def _atomic_write(path, data):
-    """Write ``data`` bytes to ``path`` atomically and durably."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-    _fsync_dir(path.parent)
-
-
-def _fsync_dir(directory):
-    try:
-        fd = os.open(str(directory), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
-
-
 def _safe_id(value):
     """Map a bundle id to an on-disk file stem, INJECTIVELY (ADV-C2-3/A-4).
 
@@ -417,11 +404,21 @@ def build_receipt(
     issued_at=None,
     supersedes=None,
     inventory=None,
+    keypair,
 ):
-    """Build a schema-valid L1 receipt dict (with self-digest).
+    """Build a schema-valid, L4-attested L1 receipt dict (with self-digest).
 
     ``removed_records`` is a list of record dicts that were removed in this
     deletion; only their id + integrity digest are retained in the receipt.
+
+    ``keypair`` (mbcp.attestation.KeyPair) is REQUIRED: the receipt is
+    ed25519-signed before it is returned (SPEC 1.2.6, fail-closed — there
+    is no unsigned build path). Service-issued receipts sign with the
+    service root's per-root keypair (:meth:`L1DeletionService`); direct
+    callers (fixtures, third-party tooling) pass any keypair — the
+    signature always verifies against the pubkey embedded in the receipt,
+    independent of which key signed it. ed25519 is deterministic: the
+    same inputs + same key yield byte-identical receipts.
 
     ``inventory`` (audit §13) is the list of bundle ids that constituted
     the store root at deletion time; it is recorded (sorted, with a
@@ -485,10 +482,14 @@ def build_receipt(
     }
     if supersedes is not None:
         body["supersedes"] = supersedes
-    receipt = {
+    envelope = {
         "receipt": body,
         "integrity": {"algo": "sha256", "digest": canonical_sha256(body)},
     }
+    # L4 attestation (SPEC 1.2.6): sign the whole envelope minus the sig
+    # field BEFORE schema validation — an unsigned receipt must never
+    # validate against deletion-receipt.v0.json (fail-closed schema).
+    receipt = sign_envelope(envelope, keypair, body_field="receipt")
     return _validate_receipt(receipt)
 
 
@@ -507,6 +508,18 @@ class L1DeletionService:
         # recover() skipped in its MOST RECENT run (0 before the first
         # run and after any run with no skips). Never silent.
         self.last_recovery_skipped_unreadable = 0
+        # M4 Round B (SPEC 1.2.6): the per-root ed25519 keypair, created
+        # on first signing use and cached for this instance. The private
+        # seed lives at <root>/.mbcp.key (0600); the pubkey is embedded in
+        # every receipt this service issues.
+        self._keypair = None
+
+    def _attestation_keypair(self):
+        """This root's L4 signing keypair — ensured (created 0600) on
+        first use, cached per instance (SPEC 1.2.6; rotation deferred)."""
+        if self._keypair is None:
+            self._keypair = ensure_keypair(self.root)
+        return self._keypair
 
     def _root_lock(self, timeout=DEFAULT_LOCK_TIMEOUT):
         """Bounded re-entrant advisory lock on this service root (audit §3)."""
@@ -1169,6 +1182,7 @@ class L1DeletionService:
             issued_at=now or self._clock(),
             supersedes=old_receipt["integrity"]["digest"],
             inventory=inventory,
+            keypair=self._attestation_keypair(),
         )
         self._self_check(receipt)
         path = self.receipts_dir / f"{receipt['receipt']['id']}.json"
@@ -1222,7 +1236,7 @@ class L1DeletionService:
         """
         receipt = build_receipt(
             bundle_id, tombstone, removed_records, issued_at=now or self._clock(),
-            inventory=inventory,
+            inventory=inventory, keypair=self._attestation_keypair(),
         )
         path = self.receipts_dir / f"{receipt['receipt']['id']}.json"
         if reissue_on_id_collision and path.exists():
@@ -1411,7 +1425,13 @@ class L1DeletionService:
         """Check a receipt artifact against durable service state.
 
         Returns ``{"ok": bool, "problems": [...], "receipt_id": ...}``.
-        Checks: schema, self-digest, ``tombstone_digest`` vs the embedded
+        Checks: schema (which now REQUIRES the L4 attestation fields, so a
+        receipt with no ``attestation_sig`` fails closed with the field
+        named), the ed25519 attestation itself (SPEC 1.2.6 — the sig must
+        verify against the pubkey embedded in the receipt body over the
+        envelope bytes minus the sig; a tampered envelope or a signature
+        from a different key both fail closed, there is no
+        verify-without-signature mode), self-digest, ``tombstone_digest`` vs the embedded
         tombstone, the embedded tombstone vs the *journal* tombstone (so
         ``deleted_at``, ``reason`` and ``derived_artifacts`` are bound to
         durable evidence rather than to the receipt itself),
@@ -1462,6 +1482,13 @@ class L1DeletionService:
             _validate_receipt(receipt)
         except ReceiptValidationError as err:
             return {"ok": False, "problems": [str(err)], "receipt_id": None}
+
+        # L4 attestation (SPEC 1.2.6): the outermost binding — verified
+        # first, fail-closed, no downgrade. A missing attestation_sig was
+        # already rejected by the schema gate above (with the field
+        # named); here the signature must verify against the pubkey
+        # embedded in the receipt body over the exact envelope bytes.
+        problems.extend(attestation_problems(receipt, body_field="receipt"))
 
         body = receipt["receipt"]
         receipt_digest = receipt["integrity"]["digest"]

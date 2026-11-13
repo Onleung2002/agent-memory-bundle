@@ -1,0 +1,196 @@
+{
+  "id": "PRP-04",
+  "spec_version": "0.1",
+  "title": "intake authorization (SPEC 1.2.7): accept-list with an unrelated key -> unknown key_id, pack rejected",
+  "op": "propagate",
+  "input": {
+    "source_bundles": [
+      {
+        "bundle": {
+          "id": "sc-prp01-src"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-001",
+            "kind": "fact",
+            "body": "synthetic source copy one",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "3fe2634840ceeb7b4fb54e267bac8ee870f1320b9bfed6c911bedc37265e925e"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-002",
+            "kind": "fact",
+            "body": "synthetic source copy two",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "2383cf456dbb84377002c68e9a14774335962fe84d79d208224a1afdbf288a57"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ],
+    "dest_bundles": [
+      {
+        "bundle": {
+          "id": "sc-prp01-dst"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-001",
+            "kind": "fact",
+            "body": "synthetic dest copy one",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "fcf8467be2f3e37a76cee0b8b6db03fc5c85bb1bf93e8a0b456a05d92a07516a"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-002",
+            "kind": "fact",
+            "body": "synthetic dest stale copy two",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "5d141163e5f3db6be0475ad3459fadbe2d2db69c94eddbb05de2716a57867da0"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-003",
+            "kind": "fact",
+            "body": "synthetic dest copy three",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "d0385da10b2661b12a0df78b17ab87734bf6bb2fbbd7b51b484a1a07dd55d51d"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ],
+    "delete": [
+      {
+        "bundle_id": "sc-prp01-src",
+        "target_id": "rec-002",
+        "reason": "synthetic erasure propagated cross-root"
+      }
+    ],
+    "authorize_wrong_key": true
+  },
+  "expect": {
+    "error": "AuthorizationRejectedError",
+    "dest_record_ids": [
+      "rec-001",
+      "rec-002",
+      "rec-003"
+    ]
+  }
+}

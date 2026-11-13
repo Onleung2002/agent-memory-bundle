@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import mbcp.deletion as deletion_mod
 from mbcp import (
+    authorize_source,
     L1DeletionService,
     LockTimeoutError,
     build_bundle,
@@ -162,6 +163,11 @@ def test_lock_same_thread_reentrant_via_propagation_intake():
         svc.put_bundle(_b(("r1", "body one")))
         svc.delete("bundle-alpha", "r1", "user request")
         pack = export_propagation_pack(svc, source_root="root-src", now=FIXED_NOW)
+        # UPDATED-PIN (M4 Round B, SPEC 1.2.7): intake is fail-closed —
+        # authorize the source key (same root here) before the import.
+        authorize_source(
+            svc.root, pack["pack"]["key_id"], pack["pack"]["attestation_pubkey"]
+        )
         done = threading.Event()
 
         def intake():
