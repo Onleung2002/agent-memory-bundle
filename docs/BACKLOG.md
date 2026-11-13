@@ -98,6 +98,16 @@
 5. **[已 pin] ADV-C3-4**：跨 process flock 證據 pin（controller 親手寫 `tests/test_flock_cross_process.py`：兩真 OS process、barrier/Event 無 sleep、phase1 typed timeout + phase2 釋鎖後成功 + phase1 零寫入 residue；mutation（neutralize flock）乾淨捉到）。「SPEC 已聲稱嘅嘢 suite 必須有證據」。
 6. **[裁定] delete-handle verbatim residual = LOW**：`get_bundle`/delete bundle_id 檔案定址保持 verbatim（case-variant = 唔同檔案），fail-closed；SPEC 1.5 comparison scope 本來就唔涵蓋 file addressing——spec-consistent，已在 §1.2.3 補句講明。
 
+## M4 Round B audit2 hotfix verify（2026-11-13，a18f7d0 PASS-WITH-ADVISORIES，6/6 mutations load-bearing）
+1. **[已修] W1 keypoint validation**：三層（authorize_source / load_keypair / attestation_problems embedded-pubkey gate）——L3 係 load-bearing（verifier 親手手寫 accept-list bypass L1 證明 config-time 驗證擋唔住手列入嘅 identity key）；identity-pubkey 零私鑰 chain attack 紅轉綠（victim record 倖存、journal 唔存在）；`checkvalid` byte-identical（minimal-diff 裁決）+ pin 斷言 raw 偽造 equation 層仍 True——誠實 scope 有測試背書。
+2. **[已修] W2 key-loss fail-closed**：`KeyMaterialLostError`（receipts/journal 歷史存在即拒）；`rotate_keypair` 顯式 hatch（docstring「silently loses the tail」誠實）；**verifier 裁定 per-instance cache 可接受**（cached valid material 繼續簽 = availability-preserving 同 trust domain；key-loss 發現路徑 = restart 後新 instance）——BACKLOG LOW：per-signing-op stat 或 SECURITY.md 記 cache 語意。
+3. **[已修] W5-W8**：DeletionError 入 except（契約「failure→line appended」全 typed 覆蓋）、acked line `.get("retry_count",0)`、schema 驗證入 signed-only gate（sig-first 保持）、dead-lettered 拒 re-enqueue——audit probe7 P4-P7 全紅轉綠。
+4. **[裁定] H6 docstring-only 可接受**：SPEC 1.2.8 無 mandate eligibility gate；enforce 會爆 dead-letter pin（fixed injected now MAX+1 retries）；已 pin advisory 語意（`test_next_attempt_at_is_advisory_not_enforced`）——未來 enforce = visible deliberate change。
+5. **[backlog] W3/W4/W9/H1**（audit 原判 LOW）：authorize_source untyped ValueError、record_pending 無鎖 append（唔係洗白通道）、build-path untyped crash、load_keypair wrong-length hex——全部 fail-closed 下游（verifier 再確認）。
+6. **[backlog] H3/H4/H5 spec-lag**：supersession 兩觸發位（SPEC 1.2.2 話一個）、write-boundary id-level 措辭（SPEC 話 (id,digest) pairs）、receipt 層兩處 exact compare（conservative direction）——下次 SPEC touch 修。
+7. **[backlog] verifier 新發現 ×2**：keypair cache 語意記 SECURITY.md 候選；L2 keypoint gate 對 self-consistent key 檔係 redundancy（無 seed 映射 small-order point）——保留作 cheap defense-in-depth，零動作。
+8. **[記錄] I5**：mut3 下 alone-copy pin 唔 discriminating——強化建議（同 bundle 加第二條 active copy）收 BACKLOG；I6 = ADV-C2-4 重申（non-new）。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
