@@ -7,7 +7,7 @@
 
 - **A-01 至 A-15：已收編**（M3 精確化 round 0 起：A-01/A-02 parse + compare mode 補句、A-05 suite 同步、A-07 分層處理，其餘 PIN 項全部 SPEC 補句落實）
 - **A-16：已收編**——M4 Round C Batch 1（commit 88e515e）裁決 + 修復：duplicate tiebreak = canonical SHA-256（主 impl 改動 + 測試），order-independent
-- **A-17 至 A-27：已收編**（PIN 全部落 SPEC / suite；A-21 dropped-ids = M4 輪內已落）
+- **A-17 至 A-27：已收編**（PIN 全部落 SPEC / suite）——**例外：A-21 dropped-ids 係 v0.2 排程，未落**（SPEC §1.2 明文「v0.1 digest-drop 為靜默；v0.2 起 load() 回傳值附 dropped-ids 通道」；`load()` 現況回傳 plain list、digest-drop 靜默。2026-11-14 controller audit 修正：先前收編表誤寫「M4 輪內已落」，記錄跟事實）
 - **仍然 OPEN（唔係本清單 A-xx 編號，記喺 BACKLOG）**：
   1. H3/H4/H5 spec-lag wording（supersession 兩觸發位、write-boundary id-level 措辭、receipt exact compare）——下次 SPEC touch 一齊修，清單見 `docs/HONESTY_OPEN_ITEMS.md`
   2. ADV-C1-1 / ADV-C3-2：legacy 非 ASCII id / 折疊 id quarantine + migration scan（A-3 availability 面）
