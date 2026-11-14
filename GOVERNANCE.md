@@ -15,7 +15,7 @@
 
 ## 貢獻者梯隊
 
-Contributor（issue/PR）→ Committer（≥5 merged PR）→ Co-maintainer（Isaac 邀請 + 現任 co-maintainer ≥1 同意）。
+Contributor（issue/PR）→ Committer（≥5 merged PR）→ Co-maintainer。Co-maintainer 任命：第一、二位由 maintainer 直接邀請（邀請理由要喺 docs commit 記錄——首任前無現任 co-maintainer 可以同意，呢個係明文嘅單人期例外）；第三位起 = Isaac 邀請 + 現任 co-maintainer ≥1 同意。
 
 ## 利益申報
 

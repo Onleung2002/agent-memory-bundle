@@ -18,5 +18,7 @@ MBCP 嘅 artifact（deletion receipt、propagation pack、ack）而家有 **L4 e
 3. **跨 root propagation intake 係 fail-closed authorization**：無 authorized-source accept-list = typed reject 所有 pack（無 unverified tier）；但 accept-list 嘅配置係 operator 責任——錯配（例如誤列錯誤嘅 key）唔會被系統偵測。
 4. **Machine unlearning 邊界**：tombstone/receipt 證明「bundle 層已刪」；runtime 記憶體、衍生快取、模型權重內容嘅實際抹除唔喺本 spec 範圍（SPEC §5 non-goals + RFC UC4）。
 5. **歷史版本**：L4 落地（Round B）之前嘅 receipt/pack 係 digest-chain only、無簽名；舊 artifact 對新版 schema/驗證 fail-closed 拒收。
+6. **Availability 限制（A-3）**：毒 manifest（invalid）會令受影響 service root 嘅所有 deletion 阻塞，直到人手處理（typed fail-closed、無自動 heal）。呢個係 availability 取捨，唔係保密性破口——仍然有效嘅 root 嘅 deletion receipt 唔受影響。
+7. **簽名 key cache 語意（M4 Round B W2 裁決）**：每個 process instance 會 cache 載入時驗證過嘅 key material；cache 內有效 material 喺該 instance 生命週期內繼續簽（同一 trust domain 內 preserves availability）。Key 失蹤偵測喺**下一次** instance start 先發生：該次啟動若 receipts/journal 歷史存在而 key material 缺失，即拒載（`KeyMaterialLostError`）——唔會靜默簽發。
 
 以上唔係漏洞，係 spec 明文嘅邊界。真正嘅漏洞（例如：無效 pack 被 import、journal 損壞被靜默吞、crash 後出假 ok receipt、budget 繞過、malleable signature 被 accept）——請報告，我哋 fail-closed 哲學下呢啲全部係 bug。

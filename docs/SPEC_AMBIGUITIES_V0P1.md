@@ -3,6 +3,17 @@
 來源：獨立第二實作 spike（GLM，物理隔離、零 source 盲寫，9/9 scenarios pass）。原報告：`/tmp/spike_glm/SPIKE_REPORT.md`。用途：M3 SPEC 精確化 pass 嘅 requirement 輸入。
 狀態標記：**[PIN]** = 寫低現行行為（主 impl 與 spike 讀法一致，SPEC 修訂直接採納）｜**[裁決]** = Isaac 已裁決（2026-11-06）｜**[M3]** = 落 M3 實作項｜**[分歧]** = spike 與主 impl 讀法唔同，需 Isaac 裁決。
 
+## 收編狀態（2026-11-14 更新，對照 docs/BACKLOG.md）
+
+- **A-01 至 A-15：已收編**（M3 精確化 round 0 起：A-01/A-02 parse + compare mode 補句、A-05 suite 同步、A-07 分層處理，其餘 PIN 項全部 SPEC 補句落實）
+- **A-16：已收編**——M4 Round C Batch 1（commit 88e515e）裁決 + 修復：duplicate tiebreak = canonical SHA-256（主 impl 改動 + 測試），order-independent
+- **A-17 至 A-27：已收編**（PIN 全部落 SPEC / suite；A-21 dropped-ids = M4 輪內已落）
+- **仍然 OPEN（唔係本清單 A-xx 編號，記喺 BACKLOG）**：
+  1. H3/H4/H5 spec-lag wording（supersession 兩觸發位、write-boundary id-level 措辭、receipt exact compare）——下次 SPEC touch 一齊修，清單見 `docs/HONESTY_OPEN_ITEMS.md`
+  2. ADV-C1-1 / ADV-C3-2：legacy 非 ASCII id / 折疊 id quarantine + migration scan（A-3 availability 面）
+  3. Registry v0.2：external record 驗證設計（fetchable repo_url + 拒 cite 本 repo commit）
+  4. Blind-rewrite spike v2：major spec 修訂（Round A/B/C）後未重跑——G1 前應重複一次（M3 實證：一次捉 31 條歧義）
+
 ## Blocking（7）
 
 - **A-01** [PIN] 非 ASCII 輸出：canonical JSON 用 raw UTF-8（`ensure_ascii=False`），唔用 `\uXXXX` escape。SPEC §1.4 補句。
