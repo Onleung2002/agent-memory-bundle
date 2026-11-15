@@ -1,6 +1,6 @@
 # RFC: Hermes Self-Host Deployment — MBCP as the Memory Backend of the Hermes Profile System
 
-**Status:** DRAFT — design only, zero code. Pending Isaac's per-item ruling.
+**Status:** APPROVED — Isaac per-item ruling 2026-11-14 (B-Q1 to B-Q6 all approved as recommended, see §8 裁決欄). Design only, zero code.
 **Date:** 2026-11-15
 **Author:** controller (memory_bundle profile)
 **Scope guard:** This deployment uses the MBCP library as-is. It modifies NO code under `mbcp/`. It is an internal deployment, not a library change.
@@ -96,16 +96,16 @@
 
 ---
 
-## 8. Open Questions（待 Isaac 逐條裁決）
+## 8. Open Questions（Isaac 裁決 2026-11-14，B-Q1 至 B-Q6 全部照建議批）
 
-| # | 問題 | 建議 | 理由 |
-|---|---|---|---|
-| Q1 | **Profile 集範圍**：brief 列 {knowledge_base, job_applicator, translator, global_economist, memory_bundle}，實際磁碟係 9 個（job_applicator / translator 唔存在）。部署範圍係邊個：A) 5 個（brief 原列，缺 job_applicator/translator 則跳過）；B) 9 個（磁碟全部）；C) 磁碟全部 + 5 個 brief 列名嘅特別標記（job_applicator 將來出現時自動入 secret tier） | C（建議） | Brief 名列嘅 profile 有特別敏感度分層；磁碟全部 profile 都有記憶。缺嘅 profile 出現時自動入套，唔好每個新 profile 再問一次 |
-| Q2 | **Root 位置**：root 跟 profile（`/opt/data/profiles/<profile>/memory/mbcp_root/`）定集中一個目錄（`/opt/data/mbcp_roots/<profile>/`） | 跟 profile（建議） | 備份/遷移 profile 時 root 跟住走；集中目錄令 profile 和 root 響兩個位置管理 |
-| Q3 | **USER.md 建唔建入 bundle**：USER.md 係 Isaac 個人 profile（PII），建議排除，只收 MEMORY.md | 排除（建議） | USER.md 係人 PII，唔係「記憶」— bundle 嘅對象係記憶，唔係個人身份 |
-| Q4 | **改動語意**：MBCP 冇 in-place update；改一筆 = tombstone 舊 id + 新 record。呢個語意接唔接受？ | 接受（建議） | tombstone + new record 係 append-only 原生語意；比 in-place edit 更符合 MBCP 可審計 |
-| Q5 | **跨 root 傳播**：export_propagation_pack 喺本用例實際用唔用？同 fact 跨 profile 係咪存在？ | 暫不使用（建議） | 每個 profile 獨立 id，同 fact 唔共享 id；跨 root 傳播係未來 scope，本 RFC 階段唔做 |
-| Q6 | **Dispatcher 實現者**：design doc 是本 RFC；實作時 dispatcher cron script 係 worker 寫，定係 controller 做 | worker（Kimi core）寫 + verifier（GLM）實跑核實 | 照 milestone 鐵律：寫碼唔係 controller |
+| # | 問題 | 建議 | 裁決 | 理由 |
+|---|---|---|---|---|
+| Q1 | **Profile 集範圍**：brief 列 {knowledge_base, job_applicator, translator, global_economist, memory_bundle}，實際磁碟係 9 個（job_applicator / translator 唔存在）。部署範圍係邊個：A) 5 個（brief 原列，缺 job_applicator/translator 則跳過）；B) 9 個（磁碟全部）；C) 磁碟全部 + 5 個 brief 列名嘅特別標記（job_applicator 將來出現時自動入 secret tier） | C（建議） | **批 C**。範圍 = 磁碟全部 9 個 profile；brief 名列 5 個做特別敏感度標記；job_applicator 將來出現時自動入 secret tier。Isaac 備註：job_applicator/translator 唔存在係 brief 筆誤，controller 捉得啱 | Brief 名列嘅 profile 有特別敏感度分層；磁碟全部 profile 都有記憶。缺嘅 profile 出現時自動入套 |
+| Q2 | **Root 位置**：root 跟 profile（`/opt/data/profiles/<profile>/memory/mbcp_root/`）定集中一個目錄（`/opt/data/mbcp_roots/<profile>/`） | 跟 profile（建議） | **批**：`/opt/data/profiles/<profile>/memory/mbcp_root/` | 備份/遷移 profile 時 root 跟住走 |
+| Q3 | **USER.md 建唔建入 bundle**：USER.md 係 Isaac 個人 profile（PII），建議排除，只收 MEMORY.md | 排除（建議） | **批**：排除 | USER.md 係人 PII，唔係「記憶」 |
+| Q4 | **改動語意**：MBCP 冇 in-place update；改一筆 = tombstone 舊 id + 新 record。呢個語意接唔接受？ | 接受（建議） | **批**：append-only 語意 | tombstone + new record 係 append-only 原生語意，符合可審計 |
+| Q5 | **跨 root 傳播**：export_propagation_pack 喺本用例實際用唔用？同 fact 跨 profile 係咪存在？ | 暫不使用（建議） | **批**：暫不使用 | 每個 profile 獨立 id，同 fact 唔共享 id；跨 root 傳播係未來 scope |
+| Q6 | **Dispatcher 實現者**：design doc 是本 RFC；實作時 dispatcher cron script 係 worker 寫，定係 controller 做 | worker（Kimi core）寫 + verifier（GLM）實跑核實 | **批**：worker 寫，controller 唔寫 code | 照 milestone 鐵律：寫碼唔係 controller |
 
 ---
 
