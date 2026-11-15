@@ -108,6 +108,11 @@
 7. **[backlog] verifier 新發現 ×2**：keypair cache 語意記 SECURITY.md 候選；L2 keypoint gate 對 self-consistent key 檔係 redundancy（無 seed 映射 small-order point）——保留作 cheap defense-in-depth，零動作。
 8. **[記錄] I5**：mut3 下 alone-copy pin 唔 discriminating——強化建議（同 bundle 加第二條 active copy）收 BACKLOG；I6 = ADV-C2-4 重申（non-new）。
 
+## 外部對接（2026-11-14，controller watch signal，Isaac 批准入 backlog）
+
+- **[backlog] Vanta ATC MEM evidence-layer mapping**：Vanta ATC 65 controls 內有 MEM domain（memory write validation/provenance/expiry、integrity/tamper-evidence、access scoping）——MBCP receipt/digest/provenance 模式係 MEM-01/02 controls 嘅 evidence 層候選（低 gymcost 對接位）。唔即刻做 mapping 文件：無外部 demand 驅動前不動（兩刀 audit 已完成嘅對外聲明唔好自發加 code 使之過期）。有考官/客戶/審核 demand 先開。
+- **[開放] draft-saihm-memory-protocol positioning**：W3C CG conformance deliverable 已 charter 化（v1.1 CFC 2026-11-02 收），normative reference = IETF `draft-saihm-memory-protocol`（tombstone/erasure-receipt/audit anchor——同 MBCP 正面重疊）。G1 前要 positioning 決策（對標/互補/組合）。Isaac 批：出小型對標 memo，唔動 code。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
