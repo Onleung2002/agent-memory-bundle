@@ -1,0 +1,12 @@
+{
+  "profiles_root": "/opt/data/profiles",
+  "memories_dir": "memories",
+  "memory_filename": "MEMORY.md",
+  "root_subdir": "memory/mbcp_root",
+  "log_subdir": "memory/dispatcher",
+  "owner": "hermes",
+  "secret_tier_profiles": ["job_applicator"],
+  "notify_cmd": null,
+  "max_entry_chars": 4096,
+  "lock_timeout_seconds": 10.0
+}

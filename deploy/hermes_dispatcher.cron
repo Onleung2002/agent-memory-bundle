@@ -1,0 +1,14 @@
+# RFC-B Hermes self-host dispatcher — daily cron (RFC §5/§7).
+#
+# Install with: crontab -l | cat - hermes_dispatcher.cron | crontab -
+# (review first; paths assume the repo checkout at the location below).
+#
+# 03:00 daily: build the day's incremental bundle for every profile.
+#             Non-zero exit (any profile failed) is fail-closed; failures are
+#             already logged per-profile and pushed to notify_cmd if set.
+# 06:00 daily: cron-miss / failure watcher — every profile must have an "ok"
+#             run record for today (run records, not manifest existence,
+#             are the source of truth for no-change days).
+REPO=/opt/data/projects/agent-memory-bundle
+0 3 * * * cd "$REPO" && /usr/bin/python3 deploy/hermes_dispatcher.py run --config deploy/hermes_dispatcher.config.json >> /var/log/hermes_dispatcher.log 2>&1
+0 6 * * * cd "$REPO" && /usr/bin/python3 deploy/hermes_dispatcher.py status --config deploy/hermes_dispatcher.config.json --expect-date "$(date +\%F)" --notify >> /var/log/hermes_dispatcher.log 2>&1
