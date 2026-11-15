@@ -110,7 +110,7 @@
 
 ## 外部對接（2026-11-14，controller watch signal，Isaac 批准入 backlog）
 
-- **[backlog] Vanta ATC MEM evidence-layer mapping**：Vanta ATC 65 controls 內有 MEM domain（memory write validation/provenance/expiry、integrity/tamper-evidence、access scoping）——MBCP receipt/digest/provenance 模式係 MEM-01/02 controls 嘅 evidence 層候選（低 gymcost 對接位）。唔即刻做 mapping 文件：無外部 demand 驅動前不動（兩刀 audit 已完成嘅對外聲明唔好自發加 code 使之過期）。有考官/客戶/審核 demand 先開。
+- **[backlog] Vanta ATC MEM evidence-layer mapping**：Vanta ATC 65 controls 內有 MEM domain（memory write validation/provenance/expiry、integrity/tamper-evidence、access scoping）——MBCP receipt/digest/provenance 模式係 MEM-01/02 controls 嘅 evidence 層候選（低成本對接位）。唔即刻做 mapping 文件：無外部 demand 驅動前不動（兩刀 audit 已完成嘅對外聲明唔好自發加 code 使之過期）。有考官/客戶/審核 demand 先開。
 - **[開放] draft-saihm-memory-protocol positioning**：W3C CG conformance deliverable 已 charter 化（v1.1 CFC 2026-11-02 收），normative reference = IETF `draft-saihm-memory-protocol`（tombstone/erasure-receipt/audit anchor——同 MBCP 正面重疊）。G1 前要 positioning 決策（對標/互補/組合）。Isaac 批：出小型對標 memo，唔動 code。
 
 ## 工序教訓（worker 品質 pattern）
