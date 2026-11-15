@@ -1,6 +1,6 @@
 # RFC: External Anchor Tool — MBCP receipt digest 嘅第三方 timestamp 錨定
 
-狀態：**DRAFT — 待 Isaac 批准，批准前零新 code**
+狀態：**APPROVED — Isaac 2026-11-14 逐條裁決（A-Q1..A-Q7 全批），實作待 RFC-B 先行後開工**
 作者：controller（memory_bundle profile）；日期：2026-11-15
 依據：Isaac 工作流 brief（2026-11-14）、SECURITY.md 誠實條款節、SPEC §1.2（supersession）、GOVERNANCE 原則 2（術語法）
 術語註記：本文全篇遵守 GOVERNANCE 原則 2——唔用「certi-」族詞彙做任何 conformance 宣稱。RFC3161 協議內部會涉及 X.509 信任鏈文件，本文一律稱「TSA 信任鏈 / TSA 公鑰鏈」，係協議術語唔係能力宣稱。
@@ -9,7 +9,7 @@
 
 ## 0. 現狀基線
 
-- M4 已收（main=76aef91，CI success）。deletion receipt 有 L4 ed25519 簽名（per-root keypair，`.mbcp.key` 0600），verify fail-closed。
+- M4 已收（Isaac 勘誤 2026-11-14：baseline main = 35c326e）。deletion receipt 有 L4 ed25519 簽名（per-root keypair，`.mbcp.key` 0600），verify fail-closed。
 - 已知誠實窿（SECURITY.md §16 已披露嘅延伸）：**receipt 體系係 self-referential**。所有驗證素材（journal、evidence、key）都住喺同一個 service root 入面。第三方想證明「呢張 receipt 喺某個時間點已經存在，而且之後無被改寫」，而家冇任何 out-of-band 出路——root writer 可以事後重造整套 artifact（甚至連簽名重簽，因為 key 同 root 同域）。
 - SAIHM（draft-saihm-memory-protocol-03）用公鏈 audit log 解呢個問題。MBCP 嘅 P-A 對標定位（2026-11-14 裁決）係「portable cross-root deletion accountability」——第三方 timestamp 證據正正係呢個定位缺嘅嗰塊。
 - 本工作位置：**root 旁邊嘅 artifact 層**，standalone 工具。唔入 `mbcp/` 核心。
@@ -48,7 +48,7 @@
 
 **建議**：主路 = A；B 唔做獨立功能，只保留「pending 事件用 append-only JSONL 記錄」（同 tombstone journal 同構，唔叫佢 transparency log，避免 overclaim）。
 
-### 開放問題 Q1
+### 開放問題 Q1【已裁決 2026-11-14：批，照建議】
 
 Q1：係咪接受「主路 = RFC3161 公共 TSA、freetsa.org 預設、Merkle log 唔做」？定係你想要 B 都一齊落（例如做俾 self-host 場景用）？
 
@@ -58,7 +58,7 @@ Q1：係咪接受「主路 = RFC3161 公共 TSA、freetsa.org 預設、Merkle lo
 - **建議 anchor 粒度**：每條 supersession chain 嘅 **chain-tail receipt** 一個 anchor（舊 receipt 被 tail 覆蓋，單獨 anchor 佢無增量價值）；加一個 **journal snapshot digest**（全 journal canonical digest）做 root-level 錨，令「journal 之後無新增刪除」都可以表述。
 - **唔 anchor**：非 chain-tail 舊 receipt（除非 Isaac 裁決要）、ack/propagation artifact（可以日後擴展，M 唔入 scope）。
 
-### 開放問題 Q2
+### 開放問題 Q2【已裁決 2026-11-14：批，照建議】
 
 Q2：anchor 粒度照「chain-tail receipt + journal snapshot」行？定係要全部 receipt（含被 supersede 嘅）都 anchor？
 
@@ -71,7 +71,7 @@ Q2：anchor 粒度照「chain-tail receipt + journal snapshot」行？定係要�
 - TSA 信任鏈 snapshot：第一次成功提交時，將 TSA 公鑰鏈文件 fetch/存入 `evidence/anchors/trust/<endpoint>/`——**呢個係關鍵**：TSA 日後消失/換 key 時，第三方仲可以用 snapshot 驗證舊 token（snapshot 本身嘅 authentic要先由提交者自行 out-of-band 核對一次，呢點寫入誠實條款）。
 - `evidence/anchors/` 內所有檔案 **immutable**：寫入後唔覆寫、唔刪除；重複提交同一 digest 會攞到新 token，存做 `<digest>.<n>.tsr`（n 遞增），唔覆寫舊 token（多個 timestamp 只會加強證據，唔會互相矛盾）。
 
-### 開放問題 Q3
+### 開放問題 Q3【已裁決 2026-11-14：批，照建議】
 
 Q3：`evidence/anchors/` 目錄名同埋「immutable + 版本遞增唔覆寫」語意，照接受？
 
@@ -89,7 +89,7 @@ Q3：`evidence/anchors/` 目錄名同埋「immutable + 版本遞增唔覆寫」�
 
 - `canonical-replay` 獨立腳本係新發明項：**分流判定**——佢係 implementation detail（SPEC §1.4 規則嘅 read-only 重實現，唔加新語意），唔 spec-worthy；但要帶一條 test：對 fixture receipts，replay digest == `mbcp.canonical` digest（防兩套實現 drift）。
 
-### 開放問題 Q4
+### 開放問題 Q4【已裁決 2026-11-14：批，照建議，anti-drift test 必須】
 
 Q4：獨立 canonical-replay 腳本（俾無 MBCP 環境嘅第三方用）照接受？定係第三方就叫他裝 MBCP 套件、唔另開 replay 面？
 
@@ -133,9 +133,9 @@ Q4：獨立 canonical-replay 腳本（俾無 MBCP 環境嘅第三方用）照接
 | Q2 | anchor 粒度 = chain-tail receipt + journal snapshot | 接受 |
 | Q3 | `evidence/anchors/` + immutable 版本遞增 | 接受 |
 | Q4 | 獨立 canonical-replay 腳本 | 接受（帶 anti-drift test） |
-| Q5 | 工具位置 `anchor/`（repo 內新頂層目錄）vs `tools/` | 建議 `anchor/`——獨立目錄令「唔入 mbcp/」嘅邊界物理可見 |
-| Q6 | SECURITY.md 一句措辭 | §8 草擬版，裁決後 commit |
-| Q7 | freetsa.org 做預設 endpoint | 接受（config 可換） |
+| Q5【已裁決 2026-11-14：批】 | 工具位置 `anchor/`（repo 內新頂層目錄）vs `tools/` | 裁決：`anchor/`——獨立目錄令「唔入 mbcp/」嘅邊界物理可見 |
+| Q6【已裁決 2026-11-14：批，§8 草擬版照用】 | SECURITY.md 一句措辭 | merge 時 controller 親手 commit（唔假手 worker） |
+| Q7【已裁決 2026-11-14：批】 | freetsa.org 做預設 endpoint | 裁決：接受（config 可換） |
 
 ## 10. 明確唔做（non-goals）
 
