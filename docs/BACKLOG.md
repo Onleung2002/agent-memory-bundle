@@ -113,6 +113,15 @@
 - **[backlog] Vanta ATC MEM evidence-layer mapping**：Vanta ATC 65 controls 內有 MEM domain（memory write validation/provenance/expiry、integrity/tamper-evidence、access scoping）——MBCP receipt/digest/provenance 模式係 MEM-01/02 controls 嘅 evidence 層候選（低成本對接位）。唔即刻做 mapping 文件：無外部 demand 驅動前不動（兩刀 audit 已完成嘅對外聲明唔好自發加 code 使之過期）。有考官/客戶/審核 demand 先開。
 - **[開放] draft-saihm-memory-protocol positioning**：W3C CG conformance deliverable 已 charter 化（v1.1 CFC 2026-11-02 收），normative reference = IETF `draft-saihm-memory-protocol`（tombstone/erasure-receipt/audit anchor——同 MBCP 正面重疊）。G1 前要 positioning 決策（對標/互補/組合）。Isaac 批：出小型對標 memo，唔動 code。**2026-11-14 裁決：P-A 對標共存**——MBCP =「portable cross-root deletion accountability profile」，主動切分 SAIHM（operator 內 erasure + 公開 audit log）；MBCP deletion receipt 可作 SAIHM FORGET receipt 嘅補充 evidence artifact；G1 outreach 補切分句；CG positioning post 喺 G1 前出。Memo：`research_notes/mbcp_saihm_positioning_memo_2026-11-14.md`（kb profile）。
 
+## RFC-B Hermes self-host deployment verify（2026-11-15，9b6b795，verifier=GLM，verdict PASS-WITH-ADVISORIES；Isaac 裁決：F1/F2/F3 非阻塞照 merge，唔開 worker round）
+
+- **交付**：`deploy/hermes_dispatcher.py` + config + cron + README + 30 tests（deploy/ 層，`mbcp/` 零改動）。merge 2202899（guard 355→385）。三項 adversarial 硬要求全部真實操作通過（真 bundle 生成、真 delete→receipt→verify_receipt、resurrection probe）。部署上線等 RFC-A merge 完同 cron 掛好先一齊第一次真跑（Isaac 指示）。
+- **[advisory] F1（LOW）**：`delete` subcommand 刪走一筆但 MEMORY.md 仍含該 entry 時，該 profile 之後每個 daily run 都 fail（reappeared 預檢）直到 MEMORY.md 同步——刻意 fail-closed 但 README Delete 一節無寫運維後果。建議：README 補一句或 delete 輸出加 warning。
+- **[advisory] F2（LOW）**：oversized-entry gate 只有 dispatcher 預檢，library `on_budget_exceed="skip"`（library 支援 `"error"` mode 唔用）——budget gate 缺 library 層後備。建議 make_record 改傳 `on_budget_exceed="error"`。
+- **[advisory] F3（INFO）**：`test_reappeared_tombstoned_id_fails_closed` 分辨唔到 dispatcher 預檢同 library 後備；斷言加 `error_type == "DispatcherError"` 可令 dispatcher 側 mutation-visible。
+- **[裁定] worker 詮釋 flag（B-Q1）**：config 檔 = 部署規則單一來源；profile 枚舉 = 磁碟現實（掃 profiles_root）——verifier 判 justified，接得住 B-Q1「config 唔 hardcode」原文。
+- **[發現] RFC 文本落差 ×2**：① RFC §6「standard」唔係 library vocabulary（enum 淨係 {public,internal,sensitive,secret}；deploy 層映射 = marker-absent，Isaac endorsed）；② RFC §1「9 個 profile 各有 MEMORY.md」過時，實情 8 個（interior_design 空目錄）——RFC 文字由 controller 隨下個 docs commit 修。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。

@@ -15,7 +15,7 @@
   - `build_bundle(bundle_id, records=(), tombstones=())` — 返回 manifest dict；`put_bundle(manifest)` 持 root advisory lock 原子落盤，tombstoned id 嘅 record copy 被 typed reject。
   - `L1DeletionService.delete(bundle_id, target_id, reason)` — 返回 receipt；idempotent；全 root 同 id 嘅 copy 都要清走先出 receipt。
   - `export_propagation_pack(root, target_ids=None)` — 出 tombstone journal 嘅 propagation pack（digest 綁 source_root + tombstone set）。
-- Hermes profile 系統實況：`/opt/data/profiles/*/memories/` 每個 profile 有 `MEMORY.md`（+ `USER.md`）+ `.lock`。現有 8 個 profile：companystory_coo, controller, creativeco_coo, global_economist, interior_design, knowledge_base, memory_bundle, onemanco_coo, shirley-hr（共 9 個）。單個 MEMORY.md 現時 1–4KB。
+- Hermes profile 系統實況：`/opt/data/profiles/*/memories/` 每個 profile 有 `MEMORY.md`（+ `USER.md`）+ `.lock`。磁碟有 9 個 profile dir；其中 8 個有 `MEMORY.md`（interior_design/memories/ 係空 dir）——dispatcher 範圍 = 有 MEMORY.md 嘅 profile。單個 MEMORY.md 現時 1–4KB。
 - **Brief 與實況落差（必須裁決）**：brief 列嘅 profile 集 {knowledge_base, job_applicator, translator, global_economist, memory_bundle} — 當中 `job_applicator` 同 `translator` **喺磁碟上唔存在**；實際存在嘅 profile 集同 brief 唔同。見 §8 Q1。
 
 ---
@@ -79,6 +79,7 @@
 | 其餘 4 個（companystory_coo / creativeco_coo / onemanco_coo / interior_design / shirley-hr / controller） | 創作/營運/管理記憶 | `standard` | True |
 
 **規則**：
+- [勘誤 2026-11-15，worker 發現 verifier 證實]：「standard」唔係 library vocabulary——`sensitivity` enum 淨係 {public, internal, sensitive, secret}，且明文 optional。部署層映射：standard tier = sensitivity 欄位缺省（schema 明文允許 marker-absent；Isaac endorsed）。
 - secret + exportable=True 喺 build path 直接被拒（`check_sensitivity_invariant`）— 這是機器檢查嘅 invariant，唔靠自覺。
 - 求職資料類 profile 任何 record 均標 `sensitivity="secret"`，`exportable=False`，即係 bundle 內可見但唔會被 export_propagation_pack 傳出去。
 - 呢條分層唔入 spec — 係部署層 config，唔改 MBCP library。
