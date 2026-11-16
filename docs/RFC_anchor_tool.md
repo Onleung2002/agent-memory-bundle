@@ -62,6 +62,8 @@ Q1：係咪接受「主路 = RFC3161 公共 TSA、freetsa.org 預設、Merkle lo
 
 Q2：anchor 粒度照「chain-tail receipt + journal snapshot」行？定係要全部 receipt（含被 supersede 嘅）都 anchor？
 
+**Errata（2026-11-15，merge 時 controller docs commit，Isaac 批「發明項 #1 RFC errata 釘死 journal snapshot preimage」）**：journal snapshot 嘅 digest preimage 釘死為實作語意——canonical SHA-256（SPEC §1.4 規則）of「`tombstones.jsonl` 內 tombstone objects 構成嘅 JSON array，file order」；空 journal → canonical of `[]`。實作（`anchor/tool.py` `journal_snapshot_digest`）同 `anchor/README.md` 語意一致；verify 語境對 journal anchors 誠實跳過 step 3（journal 非 receipt，無 `verify_receipt` 入口，README 有聲明）。
+
 ## 4. Token 存放位置
 
 - 新目錄：**`evidence/anchors/`**（喺 bundle root 內，evidence 層延伸；唔掂 journal、唔掂 `evidence/` 既有 receipt 檔案區）。

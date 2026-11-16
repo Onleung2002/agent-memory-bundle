@@ -122,6 +122,15 @@
 - **[裁定] worker 詮釋 flag（B-Q1）**：config 檔 = 部署規則單一來源；profile 枚舉 = 磁碟現實（掃 profiles_root）——verifier 判 justified，接得住 B-Q1「config 唔 hardcode」原文。
 - **[發現] RFC 文本落差 ×2**：① RFC §6「standard」唔係 library vocabulary（enum 淨係 {public,internal,sensitive,secret}；deploy 層映射 = marker-absent，Isaac endorsed）；② RFC §1「9 個 profile 各有 MEMORY.md」過時，實情 8 個（interior_design 空目錄）——RFC 文字由 controller 隨下個 docs commit 修。
 
+## RFC-A external anchor tool verify（2026-11-15，6bb8788，verifier=GLM（照 house rule 以 endpoint `/v1/models` 實查為準——session 自報名牌「Opus」唔採；Isaac 接受此記錄法），verdict PASS-WITH-ADVISORIES；Isaac 裁決：F1 及 F-1..F-9 全部非阻塞照 merge，唔開 worker round）
+
+- **交付**：`anchor/` 五模組（rfc3161.py stdlib DER、store.py immutable `evidence/anchors/` 版本遞增、tool.py submit/verify/status/retry-pending、canonical_replay.py 零 mbcp import + anti-drift pin）+ tests/test_anchor.py 31 tests + tests/test_anchor_banned_words.py（6 詞形 needle 拼合 + 注入 fire-check）。merge 975e0b7（guard origin/main 385→417，suite 393u+24sc 全綠，mbcp/SPEC/GOVERNANCE/BACKLOG/SECURITY 對 main 零 diff）。
+- **真實操作證據**：controller 同 verifier 各自獨立 clone 對真 freetsa.org 提交真 token，四步 verify（anchor-binding / openssl token 驗證對 trust snapshot / canonical replay / verify_receipt ok:True）全綠；verifier 另做 trust snapshot out-of-band curl 核對 byte-identical（notAfter 2041）。三項 adversarial 硬要求全過，另加變體 D：攻擊者重綁 `token_sha256`（token+meta 齊改）→ step 1 openssl 簽名驗證仍然擋住——驗證鏈三層獨立 fail-closed。
+- **F1（MEDIUM → 非阻塞；controller 勘誤，記錄跟事實）**：controller 初判「README openssl 命令例語法錯」；經兩個 verify thread 獨立重現互證，6bb8788 README 已係正確語法（`-in <tsr> -token_in`，逐字實跑 exit 0 / `Verification: OK`）——controller 嗰次係自己 probe 轉述錯誤，finding 撤回，worker 無違反「已核實命令先准入 code」。
+- **[advisory] F-3（MINOR，最值得下一輪修）**：`--retry-pending` 無 per-digest dedupe——同 digest N 條 pending 事件一次 run 提交 N 次（實跑證實 versions=2）；immutable 版本語意下無害但係重複網絡提交。建議：retry 前按 digest 去重。
+- **[advisory] F-1/F-2/F-8（LOW，README/註釋級）**：trust snapshot 喺 TSA POST 前寫入（失敗 submission 留低 snapshot，同 RFC §6 字面有張力）；unknown endpoint 無 `--trust-url` 記 `trust_chain_fetch_failed` 而非 `tsa_unreachable`（事件分類次序）；trust snapshot 以 host 為 key 非 RFC §4 字面 endpoint——README 補事件次序、snapshot 移後或註釋聲明偏差。
+- **[advisory] F-4/F-5/F-6/F-7/F-9（LOW，robustness）**：status 對缺 `submitted_at` meta → tool.py:661 TypeError（controller 重現）；corrupt meta/壞 receipt traceback ungraceful；`/dev/stdin` 餵 openssl 之非 Linux 攜性未證；imprint regex 對 openssl `-text` 輸出格式隱性耦合；verify step 2 錯誤措辭係 submit 語境（「refusing to anchor」）。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。

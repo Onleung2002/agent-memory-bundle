@@ -20,5 +20,6 @@ MBCP 嘅 artifact（deletion receipt、propagation pack、ack）而家有 **L4 e
 5. **歷史版本**：L4 落地（Round B）之前嘅 receipt/pack 係 digest-chain only、無簽名；舊 artifact 對新版 schema/驗證 fail-closed 拒收。
 6. **Availability 限制（A-3）**：毒 manifest（invalid）會令受影響 service root 嘅所有 deletion 阻塞，直到人手處理（typed fail-closed、無自動 heal）。呢個係 availability 取捨，唔係保密性破口——仍然有效嘅 root 嘅 deletion receipt 唔受影響。
 7. **簽名 key cache 語意（M4 Round B W2 裁決）**：每個 process instance 會 cache 載入時驗證過嘅 key material；cache 內有效 material 喺該 instance 生命週期內繼續簽（同一 trust domain 內 preserves availability）。Key 失蹤偵測喺**下一次** instance start 先發生：該次啟動若 receipts/journal 歷史存在而 key material 缺失，即拒載（`KeyMaterialLostError`）——唔會靜默簽發。
+8. **External anchor（RFC-A，2026-11-15 merge）**：deletion receipts 可以由獨立 anchor 工具（`anchor/`，`mbcp/` 零改動）提交 RFC3161 TSA 攞第三方 timestamp；第三方淨用 openssl + MBCP 獨立 canonical replay 即可驗證 receipt 嘅存在時間與完整性證據。Timestamp 嘅信任根係該 TSA，唔係 MBCP——本工具提供嘅係 **third-party timestamped evidence**，唔係防篡改、防全 root 重造或 erasure 保證（完整誠實條款見 [anchor/README.md](anchor/README.md)）。
 
 以上唔係漏洞，係 spec 明文嘅邊界。真正嘅漏洞（例如：無效 pack 被 import、journal 損壞被靜默吞、crash 後出假 ok receipt、budget 繞過、malleable signature 被 accept）——請報告，我哋 fail-closed 哲學下呢啲全部係 bug。

@@ -40,6 +40,7 @@ python3 tools/run_scenarios.py     # 18 conformance scenarios
 - ✅ M3：SPEC 精確化（31 條歧義閂）+ L2 跨 root propagation（pack/ack/journal）+ receipt supersession chain
 - ⏳ M4：L4 簽名（ed25519）、conformance registry、handover 完整流
 - Milestone 詳情：[docs/MILESTONE_M2.md](docs/MILESTONE_M2.md)、[docs/MILESTONE_M3.md](docs/MILESTONE_M3.md)
+- ✅ RFC-A：external anchor tool（`anchor/`）——deletion receipt digest 嘅第三方 RFC3161 timestamp 錨定（std-lib 提交 + openssl 驗證），設計 doc [docs/RFC_anchor_tool.md](docs/RFC_anchor_tool.md)、用法見 [anchor/README.md](anchor/README.md)
 
 ## 誠實嘅限制（讀完先用）
 
