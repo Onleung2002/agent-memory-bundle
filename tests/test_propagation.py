@@ -405,7 +405,7 @@ def test_import_applies_tombstones_and_removes_targeted_records():
             "rec-003",
         }
         # a stale re-import of the dest bundle cannot resurrect the ids
-        assert [r["id"] for r in load([dest.get_bundle("bundle-dest")])] == ["rec-001"]
+        assert [r["id"] for r in load([dest.get_bundle("bundle-dest")]).records] == ["rec-001"]
 
         # ack artifact is on disk, schema-shaped, self-consistent
         ack_path = (

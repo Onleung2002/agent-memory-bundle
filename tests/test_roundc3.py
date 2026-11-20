@@ -364,7 +364,7 @@ def test_load_tombstone_filters_case_variant_both_directions():
         tombstones=[make_tombstone(
             "Rec-1", "erased", deleted_at=FIXED_NOW)],
     )
-    assert load([upper]) == []
+    assert load([upper]).records == []
     # reverse: lowercase tombstone target, uppercase record id
     lower = build_bundle(
         "bundle-alpha",
@@ -372,7 +372,7 @@ def test_load_tombstone_filters_case_variant_both_directions():
         tombstones=[make_tombstone(
             "rec-1", "erased", deleted_at=FIXED_NOW)],
     )
-    assert load([lower]) == []
+    assert load([lower]).records == []
     # and the surviving SIBLING (distinct id) is untouched, verbatim
     mixed = build_bundle(
         "bundle-alpha",
@@ -380,7 +380,7 @@ def test_load_tombstone_filters_case_variant_both_directions():
         tombstones=[make_tombstone(
             "REC-1", "erased", deleted_at=FIXED_NOW)],
     )
-    loaded = load([mixed])
+    loaded = load([mixed]).records
     assert [r["id"] for r in loaded] == ["rec-2"]
 
 
@@ -403,15 +403,15 @@ def test_duplicate_resolution_case_insensitive_digest_tiebreak():
         [m_upper_first, m_lower_only],
         [m_lower_only, m_upper_first],
     ):
-        loaded = load(pair)
+        loaded = load(pair).records
         assert len(loaded) == 1, loaded
         assert canonical_sha256(loaded[0]) == winner_digest
     # distinct-case DIFFERENT-content records also resolve by digest,
     # order-independently
     rec_other = syn_record("rec-1", "different body")
     m_other = build_bundle("bundle-b", records=[rec_other])
-    first = load([m_upper_only, m_other])
-    second = load([m_other, m_upper_only])
+    first = load([m_upper_only, m_other]).records
+    second = load([m_other, m_upper_only]).records
     assert len(first) == 1 and first == second
     assert canonical_sha256(first[0]) == max(
         canonical_sha256(rec_upper), canonical_sha256(rec_other)

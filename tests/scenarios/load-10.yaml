@@ -1,0 +1,94 @@
+{
+  "id": "LOAD-10",
+  "spec_version": "0.1",
+  "title": "tombstoned id is filtered, not dropped: absent from records and from dropped_ids",
+  "comment": "A-21 / SPEC 3a: tombstone filtering is expected load_policy outcome, not an integrity failure. The declared empty dropped_ids pins the id staying OUT of the report channel.",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-load-10"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-gone",
+            "kind": "fact",
+            "body": "digest-valid, but tombstoned",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "32b64b35fda7c6978f42655f43b34de974c2f3aee5a2127ea5bb148d701a6c40"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-ok",
+            "kind": "fact",
+            "body": "survivor",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "681e9fa5aa0aa0f400798c01cb0038fc022a68ff7ed692dadc54834f835ec145"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": [
+          {
+            "target_id": "rec-gone",
+            "deleted_at": "2026-11-05T08:00:00Z",
+            "reason": "synthetic erasure",
+            "derived_artifacts": []
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-ok"
+    ],
+    "dropped_ids": [],
+    "digests_valid": true
+  }
+}

@@ -27,8 +27,8 @@ def _dup_manifests():
 
 def test_sc_load_02_duplicate_bundle_id_result_independent_of_input_order():
     m1, m2 = _dup_manifests()
-    first = load([m1, m2])
-    second = load([m2, m1])
+    first = load([m1, m2]).records
+    second = load([m2, m1]).records
     assert canonical_bytes(first) == canonical_bytes(second)
 
 
@@ -38,6 +38,6 @@ def test_sc_load_02_tiebreak_winner_is_greatest_content_digest():
     # append_last_wins therefore picks the copy from the manifest with the
     # lexicographically greatest digest.
     expected = m1 if canonical_sha256(m1) > canonical_sha256(m2) else m2
-    records = load([m1, m2])
+    records = load([m1, m2]).records
     assert len(records) == 1
     assert records[0]["body"] == expected["records"][0]["body"]

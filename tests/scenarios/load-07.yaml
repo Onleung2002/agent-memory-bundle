@@ -1,0 +1,89 @@
+{
+  "id": "LOAD-07",
+  "spec_version": "0.1",
+  "title": "digest-failed record is reported in dropped_ids, not silently discarded",
+  "comment": "A-21 / SPEC 3a (v0.2 API amendment 1): one digest-valid record and one whose integrity digest no longer matches its body. The forged copy must not load and its id must appear in LoadResult.dropped_ids exactly once.",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-load-07"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-good",
+            "kind": "fact",
+            "body": "ordinary body",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "25e224cdd88b6a62b3f517d8424eda00d0135daa1dbd39ea6045516fa7142a5c"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "rec-bad",
+            "kind": "fact",
+            "body": "forged body",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "0257b8f531a1118e5fe26fe1fcd2fcaf5d16728a43d5f57424a09fc5c01b5878"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-good"
+    ],
+    "dropped_ids": [
+      "rec-bad"
+    ],
+    "digests_valid": true
+  }
+}

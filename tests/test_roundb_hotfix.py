@@ -241,7 +241,7 @@ def test_identity_pubkey_zero_secret_forgery_chain_fails_at_new_gate():
         )
         assert not (dest.root / "tombstones.jsonl").exists()
         stale = dest.get_bundle("bundle-stale")
-        assert [r["id"] for r in load([stale])] == ["rec-002"]
+        assert [r["id"] for r in load([stale]).records] == ["rec-002"]
         # Same gate at the pending channel.
         assert_raises(
             AttestationVerifyError,

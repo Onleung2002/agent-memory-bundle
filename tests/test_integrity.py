@@ -17,7 +17,7 @@ def test_sc_int_01_record_with_mismatched_digest_is_dropped():
     bad = syn_record("rec-bad", "original body")
     bad["body"] = "tampered body"  # digest no longer matches body
     bundle = build_bundle("bundle-int", records=[good, bad])
-    assert [r["id"] for r in load([bundle])] == ["rec-good"]
+    assert [r["id"] for r in load([bundle]).records] == ["rec-good"]
 
 
 def test_sc_int_01_truncated_record_is_redigested_and_marked():
@@ -31,7 +31,7 @@ def test_sc_int_01_truncated_record_is_redigested_and_marked():
             ),
         ],
     )
-    records = load([bundle])
+    records = load([bundle]).records
     assert [r["id"] for r in records] == ["r1", "r2"]
     truncated = records[1]
     assert truncated["body"] == "abc"
@@ -45,7 +45,7 @@ def test_sc_int_01_truncated_record_is_redigested_and_marked():
 def test_untouched_records_keep_original_digest():
     record = syn_record("rec-orig", "untouched body")
     original_digest = record["integrity"]["digest"]
-    records = load([build_bundle("bundle-orig", records=[record])])
+    records = load([build_bundle("bundle-orig", records=[record])]).records
     assert records[0]["integrity"]["digest"] == original_digest
 
 
@@ -64,5 +64,5 @@ def test_sc_int_03_non_string_body_is_dropped_silently():
     good = syn_record("rec-good", "ordinary string body")
     manifest = build_bundle("bundle-mixed", records=[good])
     manifest["records"].insert(0, numeric)
-    records = load([manifest])
+    records = load([manifest]).records
     assert [r["id"] for r in records] == ["rec-good"]

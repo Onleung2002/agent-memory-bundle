@@ -17,7 +17,7 @@ def test_sc_del_01_load_applies_tombstone_within_same_bundle():
         records=[syn_record("ghost", "should not load")],
         tombstones=[make_tombstone("ghost", "erased", deleted_at=FIXED_TS)],
     )
-    assert load([bundle]) == []
+    assert load([bundle]).records == []
 
 
 def test_sc_del_02_cross_bundle_tombstone_blocks_resurrection():
@@ -34,7 +34,7 @@ def test_sc_del_02_cross_bundle_tombstone_blocks_resurrection():
     )
     # input order must not matter
     for bundles in ([stale, deleter], [deleter, stale]):
-        ids = [r["id"] for r in load(bundles)]
+        ids = [r["id"] for r in load(bundles).records]
         assert ids == ["rec-y"], f"input order {bundles[0]['bundle']['id']} first"
 
 
@@ -46,7 +46,7 @@ def test_sc_del_03_load_filters_lifecycle_deleted():
             syn_record("dead", "gone", lifecycle="deleted"),
         ],
     )
-    assert [r["id"] for r in load([bundle])] == ["live"]
+    assert [r["id"] for r in load([bundle]).records] == ["live"]
 
 
 def test_load_keeps_lifecycle_archived():
@@ -57,7 +57,7 @@ def test_load_keeps_lifecycle_archived():
             syn_record("archived-rec", "old", lifecycle="archived"),
         ],
     )
-    assert [r["id"] for r in load([bundle])] == ["active-rec", "archived-rec"]
+    assert [r["id"] for r in load([bundle]).records] == ["active-rec", "archived-rec"]
 
 
 def test_sc_del_04_cross_bundle_lifecycle_deleted_is_id_wide():
@@ -77,7 +77,7 @@ def test_sc_del_04_cross_bundle_lifecycle_deleted_is_id_wide():
     )
     # input order must not matter
     for bundles in ([stale, deleter], [deleter, stale]):
-        ids = [r["id"] for r in load(bundles)]
+        ids = [r["id"] for r in load(bundles).records]
         assert ids == ["rec-y"], f"input order {bundles[0]['bundle']['id']} first"
 
 
@@ -94,7 +94,7 @@ def test_lifecycle_deleted_id_wide_across_three_bundles():
         "bundle-c",
         records=[syn_record("rec-x", "copy c"), syn_record("keep-c", "c")],
     )
-    ids = sorted(r["id"] for r in load([c, a, b]))
+    ids = sorted(r["id"] for r in load([c, a, b]).records)
     assert ids == ["keep-a", "keep-c"]
 
 
@@ -108,7 +108,7 @@ def test_lifecycle_deleted_archived_copies_unaffected():
             syn_record("dead", "gone", lifecycle="deleted"),
         ],
     )
-    assert [r["id"] for r in load([bundle])] == ["arch"]
+    assert [r["id"] for r in load([bundle]).records] == ["arch"]
 
 
 def test_lifecycle_deleted_id_excludes_archived_copy_of_same_id():
@@ -122,7 +122,7 @@ def test_lifecycle_deleted_id_excludes_archived_copy_of_same_id():
         "bundle-b-del",
         records=[syn_record("rec-x", "deleted copy", lifecycle="deleted")],
     )
-    assert load([archived, deleter]) == []
+    assert load([archived, deleter]).records == []
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ def test_digest_failed_deleted_copy_produces_no_signal():
         syn_record("dead", "gone", lifecycle="deleted"), "tampered body"
     )
     bundle = build_bundle("bundle-tampered", records=[tampered])
-    assert load([bundle]) == []
+    assert load([bundle]).records == []
 
 
 def test_digest_failed_deleted_copy_does_not_block_active_copy_elsewhere():
@@ -170,7 +170,7 @@ def test_digest_failed_deleted_copy_does_not_block_active_copy_elsewhere():
         records=[syn_record("rec-x", "live copy"), syn_record("rec-y", "y")],
     )
     for bundles in ([forged, live], [live, forged]):
-        ids = [r["id"] for r in load(bundles)]
+        ids = [r["id"] for r in load(bundles).records]
         assert ids == ["rec-x", "rec-y"], ids
 
 
@@ -192,5 +192,5 @@ def test_valid_deleted_copy_still_id_wide_with_mixed_forgeries():
         "bundle-live",
         records=[syn_record("rec-x", "live copy")],
     )
-    assert load([valid_deleter, forged_deleter, live]) == []
-    assert load([forged_deleter]) == []
+    assert load([valid_deleter, forged_deleter, live]).records == []
+    assert load([forged_deleter]).records == []
