@@ -2,6 +2,8 @@
 
 > 狀態：v0.1 凍結條件未達（見 GOVERNANCE.md）。本檔係 profile 規範嘅骨架；實作細節以 schemas/ + tests/ 為準。
 
+> **v0.2 API amendment 1: dropped-ids channel (2026-11)** — `load()` 回傳形態改為 `LoadResult`（§3a）；bundle schema 零改動。SPEC 整體版本仍為 v0.1，正式 v0.2 等 spec consolidation（G1 前）。
+
 ## 0. 與既有標準嘅關係
 
 | 標準 | 關係 |
@@ -140,7 +142,7 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 - `load()` 驗證每個 record 嘅 `integrity.digest`（SHA-256 of canonical body）；**digest 唔 match → 該 record 被 drop**（唔會原樣載入）。
 - `truncate_last` 截斷 body 之後：re-digest（digest 改為 truncated body 嘅 SHA-256）**兼 mark** `integrity.truncated = true`。冇剩餘預算（或 body 非 string）→ 成個 record drop。（「body 非 string」分支喺 §1.5 驗證後不可達，保留為防禦性語意：若未來 load path 放寬驗證，非 string body 嘅行為係 drop 唔係 reject。）
 - **截斷預算計量**：truncated record 消耗嘅係截斷後長度（即用晒該 class 剩餘預算）——預算計「收貨幾多」唔計「原本有幾多」，截斷後同 class 冇再有多 record 可以載入。
-- v0.1 digest-drop 為靜默；v0.2 起 `load()` 回傳值附 dropped-ids 通道（見 §3a）。
+- v0.1 digest-drop 為靜默（已釐定為 v0.1 conformance defect，來源：2026-11-16 外部 conformance 審查 James He）；**v0.2 API amendment 1（2026-11）落實 dropped-ids 通道**：digest 驗證失敗嘅 record（含 `lifecycle:"deleted"` 而 digest 失敗嘅 copy——佢唔產生刪除訊號）同 non-string body drop 嘅 id，全部列入 `LoadResult.dropped_ids`（見 §3a）——dropped-ids are reported, not silently discarded。政策過濾（tombstone / lifecycle 刪除 / budget skip / truncate_last 冇剩餘）唔屬 dropped-ids。dropped-ids 係報告通道，唔係攔截或重建機制。
 
 ## 2. Conformance 等級（MBCP 層）
 
@@ -172,7 +174,7 @@ UMP `consent{retention, exportable, redact}` 原樣繼承；MBCP 額外要求：
 
 跨實作契約只有三個函數；其餘（build-path helpers）唔屬契約，各實作自由。
 
-- `load(bundles) -> list[record]`：輸入 manifest dict list；回傳 record dict list——records verbatim（unknown fields 保留）、截斷已套用、順序 deterministic（§1.1）；結構錯 → `LoadValidationError`；merge 衝突 → `MergeConflict`；budget error → `BudgetExceeded`。
+- `load(bundles) -> LoadResult`：輸入 manifest dict list；回傳 `LoadResult` dataclass，兩個 named fields——`records`（record dict list，verbatim 含 unknown fields、截斷已套用、順序 deterministic §1.1）同 `dropped_ids`（sorted + dedup + NFC-normalized 嘅 id `list[str]`：digest 驗證失敗——含 `lifecycle:"deleted"` 而 digest 失敗嘅 copy——同 non-string body 而被 drop 嘅 record id；同 id 既有 merge winner 又有被 drop copy 時，該 id 兩邊都出現）。**dropped-ids are reported, not silently discarded。** 政策過濾（tombstone / lifecycle 刪除 / budget skip / truncate_last 冇剩餘）唔入 `dropped_ids`。結構錯 → `LoadValidationError`；merge 衝突 → `MergeConflict`；budget error → `BudgetExceeded`。
 - `import_bundle(store, bundle) -> {"records": [...], "tombstones": [...]}`：回傳**新**狀態 dict，唔 mutate `store` 或 `bundle`；store 係同結構 dict。
 - `canonical_bytes(value) -> bytes`；`canonical_sha256(value) -> str`（canonical bytes 之 SHA-256 hex，小寫）。
 - Scenario runner（`tools/run_scenarios.py` 同任何第三方 runner）只可以用呢三個函數對 inputs 做裁決；expect 比對語意見上節。

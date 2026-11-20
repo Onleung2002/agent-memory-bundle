@@ -7,7 +7,7 @@
 
 - **A-01 至 A-15：已收編**（M3 精確化 round 0 起：A-01/A-02 parse + compare mode 補句、A-05 suite 同步、A-07 分層處理，其餘 PIN 項全部 SPEC 補句落實）
 - **A-16：已收編**——M4 Round C Batch 1（commit 88e515e）裁決 + 修復：duplicate tiebreak = canonical SHA-256（主 impl 改動 + 測試），order-independent
-- **A-17 至 A-27：已收編**（PIN 全部落 SPEC / suite）——**例外：A-21 dropped-ids 係 v0.2 排程，未落**（SPEC §1.2 明文「v0.1 digest-drop 為靜默；v0.2 起 load() 回傳值附 dropped-ids 通道」；`load()` 現況回傳 plain list、digest-drop 靜默。2026-11-14 controller audit 修正：先前收編表誤寫「M4 輪內已落」，記錄跟事實）
+- **A-21 dropped-ids：SPEC clause 已落（v0.2 API amendment 1，2026-11-19；提早自 v0.2 排程，來源：外部 conformance 審查 James He 2026-11-16）**——SPEC §1.6 / §3a 已改寫（`load()` 契約改 `LoadResult(records, dropped_ids)`）；**impl round 進行中，merge 後本條目先改「已落地」**（記錄跟事實：唔好喺 code merge 前宣稱已落地——2026-11-16 對外信嘅教訓）。歷史註記：2026-11-14 controller audit 修正過先前收編表誤寫「M4 輪內已落」
 - **仍然 OPEN（唔係本清單 A-xx 編號，記喺 BACKLOG）**：
   1. H3/H4/H5 spec-lag wording（supersession 兩觸發位、write-boundary id-level 措辭、receipt exact compare）——下次 SPEC touch 一齊修，清單見 `docs/HONESTY_OPEN_ITEMS.md`
   2. ADV-C1-1 / ADV-C3-2：legacy 非 ASCII id / 折疊 id quarantine + migration scan（A-3 availability 面）
@@ -39,7 +39,7 @@
 - **A-18** [PIN] `lifecycle:"deleted"` 喺 import path 保留唔剷（load 先 filter）。
 - **A-19** [PIN] **import 會剷走 store 入被 tombstone（store＋incoming）針對嘅既有 records**——「先刪後加」涵蓋兩邊。L2 propagation pack 就建喺呢個語意上。SPEC §1.2 補句。
 - **A-20** [PIN] store 與 incoming 同 id：store copy 勝（first wins），incoming duplicate 忽略。
-- **A-21** [M3] digest-drop 靜默無通道：load result 加 dropped-ids（併入 A-04 API pin，v0.2）。
+- **A-21** [M3] digest-drop 靜默無通道：load result 加 dropped-ids（併入 A-04 API pin，v0.2）。**現狀：SPEC clause 已落（v0.2 amendment 1，2026-11-19，提早落地——Isaac 裁決 2026-11-16），impl round 進行中；詳見收編表節。**
 - **A-22** [PIN] `on_budget_exceed:"error"`：`BudgetExceeded` 即刻 raise、load 中止。
 - **A-23** [PIN] load path 結構驗證涵蓋 manifest 層（bundle.id/mbcp_version/arrays）同 tombstone 層；`mbcp_version` load 時唔對 `^0\.1$` 檢查（tolerant reader）。
 - **A-24** [PIN] unknown-field retention 係全嵌套層級（`scope` 入面加 key 都保留）。

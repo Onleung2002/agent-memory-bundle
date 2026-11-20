@@ -1,6 +1,6 @@
 # RFC: A-21 dropped-ids 提早落地（v0.2 實作第一項）
 
-Status: DRAFT — 待 Isaac 裁決（Q1–Q5）
+Status: APPROVED — Isaac 裁決 2026-11-19，Q1–Q5 全部照建議批，開實作。
 Date: 2026-11-19
 Origin: 2026-11-16 James He（W3C CG active，UC-8 fixtures 作者）外部 conformance 審查捉到本 repo 對外信嘅不實陳述：信寫「digest-failed load reports dropped-ids rather than a clean pass」，但 MBCP v0.1 嘅 digest drop 係靜默（SPEC §1.6 + A-21 明文排程 v0.2）。Isaac 裁決 2026-11-16：A-21 提早，做 v0.2 實作第一項，MBRK030 核心 code round。
 
@@ -88,3 +88,12 @@ Brief 已釘死兩端：digest-failed 必須入；tombstoned / lifecycle-filtere
 ## 6. 時間
 
 唔阻塞 G0（11-30），但 James He 回信等緊——RFC 即批即派，目標 worker+verify 一週內收口。
+
+## 7. 裁決記錄（Isaac 2026-11-19，逐條照收）
+
+- **Q1**：批 (b) dataclass `LoadResult(records, dropped_ids)`。list-subclass 假兼容唔接受。SPEC §3a A-04 契約句改寫 + CHANGES.md 版本邊界照 RFC §3。
+- **Q2**：批。digest-failed（含 digest-failed 嘅 `lifecycle:"deleted"` copy）+ non-string body drop 兩類入 dropped-ids；budget skip / truncate_last 冇剩餘唔入。
+- **Q3**：批 (i)。淨一條 dropped_ids 通道，政策過濾（tombstone/lifecycle/budget）唔加第二條。v0.3 先諗。
+- **Q4**：批。sorted + dedup + normalize_id 嘅 plain `list[str]`；同 id winner+digest-failed copy 並存 case 必須入 suite；determinism 照 load() 主輸出同一標準。
+- **Q5**：批。SPEC 頭部 version 保持 0.1 + amendment marker「v0.2 API amendment 1: dropped-ids channel (2026-11)」；CHANGES.md 記錄。正式 v0.2 等 G1 前 spec consolidation。**對外措辭**：回 James He 信只講「v0.2 dropped-ids amendment」，唔會講成個 spec 已經係 v0.2——SPEC 文字同呢個一致。
+- 流程照 RFC §5：worker = Kimi core branch round，verifier = GLM，adversarial 四項 (a)–(d) 照 §5 實跑。
