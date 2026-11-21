@@ -52,7 +52,7 @@ def test_chatgpt_export_delete_receipt_load_pipeline():
         )
 
         assert service.verify_receipt(receipt)["ok"] is True
-        ids = [r["id"] for r in load([service.get_bundle("chatgpt-export")])]
+        ids = [r["id"] for r in load([service.get_bundle("chatgpt-export")]).records]
         assert ids == ["chatgpt:conv-beta"], ids
         assert receipt["receipt"]["removed_records"][0]["id"] == "chatgpt:conv-alpha"
 
@@ -67,7 +67,7 @@ def test_hermes_profile_delete_receipt_load_pipeline():
         receipt = service.delete("hermes-profile", target, "synthetic erasure request")
 
         assert service.verify_receipt(receipt)["ok"] is True
-        ids = [r["id"] for r in load([service.get_bundle("hermes-profile")])]
+        ids = [r["id"] for r in load([service.get_bundle("hermes-profile")]).records]
         assert target not in ids
         assert len(ids) == len(bundle["records"]) - 1
 
@@ -163,7 +163,7 @@ def test_load_across_both_bundles_after_one_deletion():
                 service.get_bundle("chatgpt-export"),
                 service.get_bundle("hermes-profile"),
             ]
-        )
+        ).records
         ids = {r["id"] for r in loaded}
         assert "chatgpt:conv-alpha" not in ids
         assert "chatgpt:conv-beta" in ids

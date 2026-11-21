@@ -159,7 +159,7 @@ def test_load_path_tolerates_preexisting_secret_exportable_record():
         "records": [record],
         "tombstones": [],
     }
-    loaded = load([manifest])
+    loaded = load([manifest]).records
     assert [r["id"] for r in loaded] == ["rec-secret"]
 
 

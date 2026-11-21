@@ -21,7 +21,7 @@ def test_sc_load_01_class_budget_not_laundered_by_big_per_record_max():
     )
     small = syn_record("small", "aa", priority="standard", max_chars=10)
     bundle = build_bundle("bundle-budget", records=[big, small])
-    ids = [r["id"] for r in load([bundle])]
+    ids = [r["id"] for r in load([bundle]).records]
     assert "big" not in ids
     assert ids == ["small"]
 
@@ -33,12 +33,12 @@ def test_class_budget_aggregates_across_records():
         max_chars=13, on_budget_exceed="skip",
     )
     bundle = build_bundle("bundle-agg", records=[r1, r2])
-    assert [r["id"] for r in load([bundle])] == ["r1"]
+    assert [r["id"] for r in load([bundle]).records] == ["r1"]
 
 
 def test_class_budgets_are_independent_per_priority():
     crit = syn_record("c1", "0123456789", priority="critical", max_chars=10)
     std = syn_record("s1", "abcdefghij", priority="standard", max_chars=10)
     bundle = build_bundle("bundle-indep", records=[std, crit])
-    ids = [r["id"] for r in load([bundle])]
+    ids = [r["id"] for r in load([bundle]).records]
     assert ids == ["c1", "s1"]

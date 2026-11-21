@@ -260,7 +260,7 @@ def test_deleted_record_is_gone_from_load():
     with tempfile.TemporaryDirectory() as tmp:
         service = _service(tmp)
         service.delete("bundle-alpha", "rec-002", "synthetic erasure")
-        ids = [r["id"] for r in load([service.get_bundle("bundle-alpha")])]
+        ids = [r["id"] for r in load([service.get_bundle("bundle-alpha")]).records]
         assert ids == ["rec-001", "rec-003"]
 
 

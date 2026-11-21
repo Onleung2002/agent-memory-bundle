@@ -21,6 +21,9 @@ YAML 1.2), so the runner stays pure-stdlib. Format:
         "bodies": {"id": "..."},        # exact body per id (load)
         "digests_valid": true,          # every digest matches its body (load)
         "digests": {"id": "hex..."},    # explicit expected digest per id (load)
+        "dropped_ids": [...],           # exact LoadResult.dropped_ids (load,
+                                        # SPEC 3a A-05: declared keys only,
+                                        # exact compare, no implicit subset)
         "truncated": ["id"],            # ids marked integrity.truncated (load)
         "tombstones": [{...}],          # import
         "compare": ["k", ...]           # tombstone keys to compare (import,
@@ -105,7 +108,7 @@ def _body_digest(body):
 def _check_load(scenario, expect):
     failures = []
     try:
-        records = load(scenario["input"]["bundles"])
+        result = load(scenario["input"]["bundles"])
     except Exception as err:  # noqa: BLE001
         if expect.get("error") == type(err).__name__:
             return []
@@ -113,9 +116,18 @@ def _check_load(scenario, expect):
     if expect.get("error"):
         return [f"expected error {expect['error']}, none raised"]
 
+    records = result.records
     ids = [r["id"] for r in records]
     if "record_ids" in expect and ids != expect["record_ids"]:
         failures.append(f"record_ids: want {expect['record_ids']}, got {ids}")
+
+    # dropped-ids channel (SPEC 3a, v0.2 API amendment 1): A-05 semantics —
+    # declared keys only, exact compare, no implicit subset. dropped_ids
+    # is sorted/dedup/normalized by load(), so the expected list is exact.
+    if "dropped_ids" in expect and expect["dropped_ids"] != result.dropped_ids:
+        failures.append(
+            f"dropped_ids: want {expect['dropped_ids']}, got {result.dropped_ids}"
+        )
 
     by_id = {r["id"]: r for r in records}
     for rid, body in expect.get("bodies", {}).items():
@@ -259,7 +271,7 @@ def _check_propagate(scenario, expect):
 
         if "dest_record_ids" in expect:
             try:
-                records = load([dest.get_bundle(bid) for bid in dest_ids])
+                records = load([dest.get_bundle(bid) for bid in dest_ids]).records
             except Exception as err:  # noqa: BLE001
                 return [f"dest load failed: {type(err).__name__}: {err}"]
             ids = [r["id"] for r in records]

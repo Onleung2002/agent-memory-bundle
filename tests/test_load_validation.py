@@ -32,7 +32,7 @@ def test_sc_schema_01_unknown_fields_pass_through_and_are_retained():
     record = syn_record("rec-u", "body")
     record["x_custom"] = {"anything": True}
     record["scope"]["x_team"] = "blue"
-    records = load([_raw_bundle(records=[record])])
+    records = load([_raw_bundle(records=[record])]).records
     assert records[0]["x_custom"] == {"anything": True}
     assert records[0]["scope"]["x_team"] == "blue"
 
@@ -96,14 +96,14 @@ def test_load_path_tolerates_missing_records_and_tombstones_keys():
     record = syn_record("rec-tol", "body")
     manifest = _raw_bundle(records=[record])
     del manifest["tombstones"]
-    assert [r["id"] for r in load([manifest])] == ["rec-tol"]
+    assert [r["id"] for r in load([manifest]).records] == ["rec-tol"]
     manifest = _raw_bundle()
     del manifest["records"]
-    assert load([manifest]) == []
+    assert load([manifest]).records == []
     manifest = _raw_bundle()
     del manifest["records"]
     del manifest["tombstones"]
-    assert load([manifest]) == []
+    assert load([manifest]).records == []
 
 
 def _raw_tombstone(**overrides):
@@ -136,7 +136,7 @@ def test_sc_schema_01_tombstone_valid_offset_timestamps_pass():
         "2026-06-01T10:20:30.5-05:30",
     ):
         tombstone = _raw_tombstone(deleted_at=ts)
-        assert load([_raw_bundle(tombstones=[tombstone])]) == []
+        assert load([_raw_bundle(tombstones=[tombstone])]).records == []
 
 
 def test_sc_schema_01_build_path_rejects_bad_deleted_at():
@@ -195,7 +195,7 @@ def test_max_chars_zero_or_negative_rejected_on_build():
 def test_max_chars_one_is_the_new_floor():
     record = syn_record("rec-min", "x", max_chars=1)
     manifest = _raw_bundle(records=[record])
-    (loaded,) = load([manifest])
+    (loaded,) = load([manifest]).records
     assert loaded["id"] == "rec-min"
 
 
@@ -241,5 +241,5 @@ def test_record_id_grammar_valid_ids_both_paths():
         validate_record(record)
         manifest = build_bundle("bundle-idg", records=[record])
         validate_bundle(manifest)
-        (loaded,) = load([_raw_bundle(records=[record])])
+        (loaded,) = load([_raw_bundle(records=[record])]).records
         assert loaded["id"] == good

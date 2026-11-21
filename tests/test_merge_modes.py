@@ -45,7 +45,7 @@ def test_sc_merge_01_mixed_first_and_last_resolves_by_record_digest():
     )
     assert winner == "from b"
     for bundles in ([b, a], [a, b]):
-        records = load(bundles)
+        records = load(bundles).records
         assert len(records) == 1
         assert records[0]["body"] == "from b"
 
@@ -71,8 +71,8 @@ def test_sc_merge_01_attack_stale_aaa_bundle_cannot_win_by_name():
     assert canonical_sha256(fresh["records"][0]) > canonical_sha256(
         stale["records"][0]
     )
-    first = load([stale, fresh])
-    second = load([fresh, stale])
+    first = load([stale, fresh]).records
+    second = load([fresh, stale]).records
     assert canonical_bytes(first) == canonical_bytes(second)
     assert len(first) == 1
     assert first[0]["body"] == "fresh legitimate copy"
@@ -87,8 +87,8 @@ def test_sc_merge_01_mixed_modes_deterministic_regardless_of_input_order():
         "bundle-b",
         records=[syn_record("dup", "from b", merge="append_first_wins")],
     )
-    first = load([a, b])
-    second = load([b, a])
+    first = load([a, b]).records
+    second = load([b, a]).records
     assert canonical_bytes(first) == canonical_bytes(second)
 
 

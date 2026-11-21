@@ -1,0 +1,101 @@
+{
+  "id": "LOAD-08",
+  "spec_version": "0.1",
+  "title": "same id on both sides: merge winner loads AND digest-failed copy is reported",
+  "comment": "A-21 / SPEC 3a: an id may appear in records (the digest-valid merge winner) and in dropped_ids (a refused copy) at the same time. This is the intended meaning: one copy of the id loaded, another was refused.",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-load-08-a"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-dup",
+            "kind": "fact",
+            "body": "authentic copy",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "fe96c97f849fdce6fb413625478a4c424a87579ece40354a85e3215ee3874bc5"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "sc-load-08-b"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-dup",
+            "kind": "fact",
+            "body": "forged copy",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "0438945288d7b040367846e88a4c69a88ad75020791c3d9cde85c9474245fc6f"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-dup"
+    ],
+    "bodies": {
+      "rec-dup": "authentic copy"
+    },
+    "dropped_ids": [
+      "rec-dup"
+    ],
+    "digests_valid": true
+  }
+}

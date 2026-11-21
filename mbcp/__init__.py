@@ -26,6 +26,7 @@ from .attestation import (
 )
 from .bundle import (
     BudgetExceeded,
+    LoadResult,
     LoadValidationError,
     MergeConflict,
     build_bundle,
@@ -93,6 +94,7 @@ __all__ = [
     "rotate_keypair",
     "validate_keypoint_pubkey",
     "BudgetExceeded",
+    "LoadResult",
     "LoadValidationError",
     "MergeConflict",
     "build_bundle",

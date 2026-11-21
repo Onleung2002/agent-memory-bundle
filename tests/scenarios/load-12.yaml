@@ -1,0 +1,169 @@
+{
+  "id": "LOAD-12",
+  "spec_version": "0.1",
+  "title": "dropped_ids determinism: bundle order two of two (reversed)",
+  "comment": "A-21 / SPEC 3a: reversed input order of the LOAD-11 bundle set. The expected dropped_ids and record_ids are identical to LOAD-11.",
+  "op": "load",
+  "input": {
+    "bundles": [
+      {
+        "bundle": {
+          "id": "sc-load-11-b3"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "drp-b",
+            "kind": "fact",
+            "body": "forged b",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "0f07a2c1bbc158ca467e2775d75ac3406b20d6da0a9e99b0d78e203ca39cd885"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "sc-load-11-b2"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "rec-live",
+            "kind": "fact",
+            "body": "live body",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "99401c26ef438d0debe72ea81da122222e049324950aa68cbdca0eef6ddd4cd2"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          },
+          {
+            "id": "drp-a",
+            "kind": "fact",
+            "body": "forged a",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "0bfb08451cb8db3f97d3e6322c4de9cff8842a38a1b4e5cd3bba180e47ab9261"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      },
+      {
+        "bundle": {
+          "id": "sc-load-11-b1"
+        },
+        "mbcp_version": "0.1",
+        "records": [
+          {
+            "id": "drp-c",
+            "kind": "fact",
+            "body": "forged c",
+            "scope": {
+              "owner": "user-synthetic-01"
+            },
+            "time": {
+              "created": "2026-11-05T08:00:00Z"
+            },
+            "lifecycle": "active",
+            "provenance": {
+              "source": "synthetic-fixture"
+            },
+            "consent": {
+              "exportable": true
+            },
+            "integrity": {
+              "algo": "sha256",
+              "digest": "0f30b52dd7cc494441dbde907d7a5f35cc12853dab34762e1083b472e72f792d"
+            },
+            "mbcp": {
+              "load_policy": {
+                "priority": "standard",
+                "max_chars": 4096,
+                "on_budget_exceed": "skip",
+                "merge": "append_first_wins"
+              }
+            }
+          }
+        ],
+        "tombstones": []
+      }
+    ]
+  },
+  "expect": {
+    "record_ids": [
+      "rec-live"
+    ],
+    "dropped_ids": [
+      "drp-a",
+      "drp-b",
+      "drp-c"
+    ],
+    "digests_valid": true
+  }
+}

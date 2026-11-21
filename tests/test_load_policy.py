@@ -19,7 +19,7 @@ def test_load_byte_identical_across_invocations():
 
 
 def test_priority_ordering_critical_standard_opportunistic():
-    records = load([syn_bundle_a(), syn_bundle_b()])
+    records = load([syn_bundle_a(), syn_bundle_b()]).records
     priorities = [r["mbcp"]["load_policy"]["priority"] for r in records]
     assert priorities == ["critical", "critical", "standard", "standard", "opportunistic"]
 
@@ -38,7 +38,7 @@ def test_on_budget_exceed_truncate_last():
             ),
         ],
     )
-    records = load([bundle])
+    records = load([bundle]).records
     assert [r["id"] for r in records] == ["r1", "r2"]
     assert records[1]["body"] == "abc"  # 13 - 10 = 3 chars remaining
 
@@ -54,7 +54,7 @@ def test_on_budget_exceed_skip():
             ),
         ],
     )
-    records = load([bundle])
+    records = load([bundle]).records
     assert [r["id"] for r in records] == ["r1"]
 
 
@@ -92,7 +92,7 @@ def test_merge_append_first_wins():
     assert canonical_sha256(first["records"][0]) > canonical_sha256(
         second["records"][0]
     )
-    records = load([second, first])  # input order must not matter
+    records = load([second, first]).records  # input order must not matter
     assert len(records) == 1
     assert records[0]["body"] == "body from bundle-a"
 
@@ -106,7 +106,7 @@ def test_merge_append_last_wins():
         "bundle-b",
         records=[syn_record("dup", "body from bundle-b", merge="append_last_wins")],
     )
-    records = load([first, second])
+    records = load([first, second]).records
     assert len(records) == 1
     assert records[0]["body"] == "body from bundle-b"
 

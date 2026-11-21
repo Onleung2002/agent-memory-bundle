@@ -5,6 +5,7 @@ import hashlib
 import math
 import re
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from . import _schema
@@ -51,6 +52,24 @@ class LoadValidationError(ValueError):
     """Raised when load() input is structurally malformed (bad types,
     missing required fields, bogus digest format). Unknown EXTRA fields
     are not an error: they pass through and are retained (SPEC P3)."""
+
+
+@dataclass
+class LoadResult:
+    """Deterministic load() result (v0.2 API amendment 1, SPEC §3a).
+
+    Two named fields, both part of the cross-implementation contract
+    (A-04): ``records`` — the loaded record dicts (verbatim, unknown
+    fields retained, truncation applied, deterministic order per
+    SPEC 1.1) — and ``dropped_ids`` — a sorted, deduplicated list of
+    NFC/ASCII-case-normalized record ids that were dropped for
+    integrity/validity failure (digest mismatch, or a non-string body
+    on the load path). Policy filtering (tombstones, authentic
+    lifecycle="deleted" signals, budget skip, truncate_last with nothing
+    left) is NOT reported here; see load() for the exact semantics.
+    """
+    records: list = field(default_factory=list)
+    dropped_ids: list = field(default_factory=list)
 
 
 def _record_schema():
@@ -539,13 +558,30 @@ def _resolve_duplicates(entries):
 def load(bundles):
     """Deterministic cross-bundle load.
 
-    Same set of bundles + same consumer version -> byte-identical result:
+    Same set of bundles + same consumer version -> byte-identical result
+    (both ``LoadResult.records`` and ``LoadResult.dropped_ids``):
 
     0. every manifest/record/tombstone is structurally validated
        (LoadValidationError on malformed input; unknown extra fields pass
        through and are retained)
     1. integrity digests are verified; records whose digest does not match
-       their body are dropped (SPEC 1.6)
+       their body are dropped (SPEC 1.6). Per the v0.2 dropped-ids
+       amendment, dropped-ids are reported, not silently discarded: every
+       record dropped for integrity/validity failure (digest mismatch, or
+       a non-string body on the load path)
+       has its normalized id listed in ``LoadResult.dropped_ids``
+       (sorted, deduplicated, NFC/ASCII-case-normalized). A record id can
+       legitimately appear on BOTH sides — a merge winner in ``records``
+       and a digest-failed copy in ``dropped_ids`` — meaning "one copy of
+       this id loaded, another was refused". Policy filtering is NOT
+       reported: ids excluded by tombstones or by an authentic
+       lifecycle="deleted" signal, records skipped by
+       load_policy.on_budget_exceed="skip", and records dropped because
+       truncate_last had no budget left are expected load_policy
+       outcomes, not integrity failures, and never enter ``dropped_ids``.
+       The dropped-ids channel is a report channel only: a dropped record
+       stays dropped — no interception, quarantine, rebuild, or retry is
+       provided.
     2. id-wide deletion pre-pass (SPEC 1.2): the ids targeted by ALL
        tombstones from ALL bundles PLUS the ids of records with
        lifecycle="deleted" that PASS their integrity digest check (audit
@@ -569,6 +605,9 @@ def load(bundles):
        that class, consumed cumulatively; over-budget records follow
        load_policy.on_budget_exceed. truncate_last re-digests the
        truncated body and marks integrity.truncated = true (SPEC 1.6).
+
+    Returns a LoadResult(records, dropped_ids); raises
+    LoadValidationError / MergeConflict / BudgetExceeded as before.
     """
     manifests = [check_manifest_on_load(m) for m in bundles]
     # deterministic order, content-digest tiebreak for duplicate bundle ids
@@ -602,14 +641,18 @@ def load(bundles):
     excluded = tombstoned | deleted_ids
 
     entries = []
+    dropped = set()
     for manifest_index, manifest in enumerate(manifests):
         for index, record in enumerate(manifest.get("records", [])):
             if normalize_id(record["id"]) in excluded:
                 continue
-            # A-07 (SPEC 1.6): non-string body -> silent drop, no exception
+            # A-07 (SPEC 1.6): non-string body -> drop, no exception; the
+            # id is reported in dropped_ids (v0.2 API amendment 1).
             if not isinstance(record["body"], str):
+                dropped.add(normalize_id(record["id"]))
                 continue
             if not _digest_ok(record):
+                dropped.add(normalize_id(record["id"]))
                 continue
             entries.append((record, (manifest_index, index)))
 
@@ -659,9 +702,11 @@ def load(bundles):
         truncated["integrity"]["truncated"] = True
         loaded.append(truncated)
         budget_used[priority] += remaining
-    return loaded
+    return LoadResult(records=loaded, dropped_ids=sorted(dropped))
 
 
 def load_bytes(bundles):
-    """Canonical bytes of the deterministic load result."""
-    return canonical_bytes(load(bundles))
+    """Canonical bytes of the deterministic load result (records only —
+    the canonical consumer contract; dropped_ids is a report channel and
+    does not change what load_bytes has always serialized)."""
+    return canonical_bytes(load(bundles).records)
