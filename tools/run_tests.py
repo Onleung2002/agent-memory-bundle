@@ -18,6 +18,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 def _load_module(path):
     spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
+    # Register in sys.modules BEFORE exec: multiprocessing (spawn/forkserver)
+    # pickles module-top targets by __module__ name lookup — without this,
+    # file-loaded test modules are unimportable and Process(target=...) raises
+    # PicklingError on spawn-based CI runners. (controller-authored flake fix,
+    # Isaac ruling 2026-11-21 — pre-existing CI flake, not A-21 scope)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
