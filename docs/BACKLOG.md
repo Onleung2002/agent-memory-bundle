@@ -131,6 +131,15 @@
 - **[advisory] F-1/F-2/F-8（LOW，README/註釋級）**：trust snapshot 喺 TSA POST 前寫入（失敗 submission 留低 snapshot，同 RFC §6 字面有張力）；unknown endpoint 無 `--trust-url` 記 `trust_chain_fetch_failed` 而非 `tsa_unreachable`（事件分類次序）；trust snapshot 以 host 為 key 非 RFC §4 字面 endpoint——README 補事件次序、snapshot 移後或註釋聲明偏差。
 - **[advisory] F-4/F-5/F-6/F-7/F-9（LOW，robustness）**：status 對缺 `submitted_at` meta → tool.py:661 TypeError（controller 重現）；corrupt meta/壞 receipt traceback ungraceful；`/dev/stdin` 餵 openssl 之非 Linux 攜性未證；imprint regex 對 openssl `-text` 輸出格式隱性耦合；verify step 2 錯誤措辭係 submit 語境（「refusing to anchor」）。
 
+## A-21 dropped-ids verify（2026-11-21，merge 38dac64，worker=Kimi 0120c04，verifier A/B=GLM glm-4.5（endpoint /v1/models 實查），verdict PASS-WITH-ADVISORIES；Isaac 批 merge 2026-11-21）
+
+- **交付**：v0.2 API amendment 1——`load()` 回傳 `LoadResult(records, dropped_ids)`（RFC docs/RFC_a21_dropped_ids.md，Isaac Q1–Q5 批 2026-11-19）。suite 436（406u+30sc，guard 417→436）。verifier：A = S1–S15 PASS + 25 adversarial probes + 零 vacuous；B = 13/13 mutations 捉到零 false-green。controller 獨立重現：policy-exclusion 優先、load_bytes 邊界、spawn-mode flock pass。
+- **A1（收編）**：SPEC 歧義角落釘死——policy exclusion precedes integrity reporting，落 `docs/SPEC_AMBIGUITIES_V0P1.md` **A-32**（連同 A2 NFC 防禦性承諾註記）。
+- **[backlog] A3**：歷輪 mutation 清單無 reproducible 記錄（verifier B 如實申報：docs/tools 只有「N mutations 零 false-green」總結，冇逐項 mutation 錨點/patch 清單；佢要自己遞補 verify_receipt 簽名 mutation）——開一輪把 standing mutation 清單（含每項 file 錨點 + patch 內容）寫入 repo（如 `tools/mutations_standing.json`），令每輪 verify 真正可重跑。
+- **[backlog] A4（nit，pre-existing）**：`load()` docstring 步驟編號（1. digest → 2. deletion pre-pass）同 code 實際次序（excluded 收集行先）唔對——本 commit 前已存在，可觀測行為一致，下次 mbcp/ touch 順手修。
+- **[記錄] CI flake fix（controller-authored test-only，Isaac 指派）**：`test_flock_cross_process::test_cross_process_flock_exclusion_and_release` 喺 CI runner（spawn context）爆 `PicklingError: Can't pickle <function _child>`——root cause 係 `tools/run_tests.py` `spec_from_file_location` 載入 test 模組冇註冊 `sys.modules`，spawn pickle 靠 `__module__` 名 lookup 搵唔到。修復 = `_load_module` exec 前 `sys.modules[spec.name] = module`（一行 root-cause fix，spawn 模式本地實測 PASS）；pre-existing 環境問題，同 docs commits 無關（Isaac 親手診斷 2026-11-21）。
+- **[記錄] branch protection bypass 註記（Isaac 指示）**：最近三次 docs-only push（c4b4f75 / 08a450e / 本輪）曾 bypass required check "guard"（remote 回「Bypassed rule violations」——docs-only commit 嘅正常 bypass 訊息），CI 事後補驗無實害；milestone 記錄一筆，唔好習慣化——docs push 後都要返嚟睇 CI 結果。
+
 ## 工序教訓（worker 品質 pattern）
 - Kimi 兩次都喺 YAML plain scalar 撞 `: `（step 名含 colon）→ CI 加 actionlint step 可即時捉（屬 SC-CI 類，下輪加）。
 - Worker 自寫測試全部 white-box 假綠（18/18 過但核心 invariant 冇 enforce）→ 證明「寫+審唔同族」係必要唔係奢侈；mutation testing 應成為 verifier 標準手段（round 2 已用，效果好）。
